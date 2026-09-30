@@ -1,7 +1,17 @@
 # Migration plan — move audio to Cloudflare R2
 
-**Status: planned, not started.** This is the tomorrow-project writeup. Nothing here
-is done yet.
+**Status: done.** The migration below shipped. Audio is served from R2, `audio/` is
+gitignored, and the install Action uploads approved recordings to R2 instead of
+committing them. This document is kept as the design record.
+
+> **What this means for this repo.** Both `councilgritter/nghe` and
+> `councilgritter/nghe_expanded` read the **same R2 bucket**, so they share one set of
+> recordings automatically. Only `nghe` runs the installer on a schedule — it is the
+> sole writer, which is what keeps the two from racing on the same clip keys. The
+> Action here is `workflow_dispatch`-only for that reason.
+>
+> One step below is **not** done: reclaiming the ~73 MB of AI audio still in git
+> history (the optional `git filter-repo` rewrite at the end).
 
 ## Why
 

@@ -1,10 +1,16 @@
 name: Install approved recordings
 
-# Run it by hand from the Actions tab (Run workflow), or on a schedule.
+# Run it by hand from the Actions tab (Run workflow).
+#
+# This repo deliberately has NO schedule trigger. Recordings are shared with
+# councilgritter/nghe through one Cloudflare R2 bucket, and that repo's hourly job
+# is the sole writer. Two scheduled installers would race on the same
+# <region>/<clip>.mp3 keys with no knowledge of each other. This repo only reads
+# the bucket (AUDIO_BASE in index.html); it never writes to it.
+#
+# Only re-enable the schedule here if you also disable it in councilgritter/nghe.
 on:
-  workflow_dispatch:              # still runnable by hand from the Actions tab
-  schedule:
-    - cron: '0 * * * *'           # and automatically at the top of every hour
+  workflow_dispatch:
 
 concurrency: install-recordings   # never two installs at once
 
