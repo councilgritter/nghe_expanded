@@ -58,6 +58,9 @@ button:focus-visible{outline:2px solid var(--amber);outline-offset:3px}
   border:1px solid var(--edge);
 }
 .sub button:hover{color:#e6ecf5;border-color:var(--muted)}
+/* compare-to-your-own: local mic only, nothing is uploaded */
+.sub button.rec-live{color:#ffb4a8;border-color:var(--no)}
+.sub button.rec-has{color:var(--amber);border-color:var(--amber)}
 .prompt{font-size:13px;color:var(--muted);text-align:center;min-height:1.2em}
 
 /* --- answer tiles: the diacritics are the content --- */
@@ -174,11 +177,14 @@ input[type=range]{flex:1;accent-color:var(--amber)}
     <div class="sub">
       <button id="again">Again</button>
       <button id="slow">Slower</button>
+      <button id="cmp" hidden>🔊 Compare to your own</button>
     </div>
     <p class="prompt" id="prompt">Listen, then pick what you heard.</p>
   </div>
 
   <div class="grid" id="grid"></div>
+
+  <audio id="cmpAudio" hidden></audio>
 
   <div class="verdict">
     <span class="lab" id="lab"></span>
@@ -434,6 +440,7 @@ function newQuestion(){
     S.item = null; return;
   }
   S.item = it; S.answered = false; S.rate = 1;
+  resetCompare();   // the previous take is discarded here — it never follows you forward
   if(!S.heard.has(it[0])){ S.heard.add(it[0]); saveHeard(); }
   S.opts = shuffle([it[0], it[1], it[2], it[3]]);
   $('next').hidden = true;
@@ -735,8 +742,92 @@ function uploadRec(blob, meta){
   r.readAsDataURL(blob);
 }
 
+/* ---------- compare to your own voice ----------
+   Entirely local and deliberately separate from the correction recorder above.
+   Nothing here is uploaded, kept, or sent anywhere: the clip lives in memory as
+   an object URL, is discarded when you move to the next question, and the mic
+   stream is stopped the moment recording ends. It needs no FLAG_ENDPOINT. */
+const cmp = {mr:null, chunks:[], url:null, mime:'', timer:null, stopTimer:null};
+
+// Recording needs the mic + MediaRecorder. Nothing else — no collector involved.
+function canCompare(){
+  return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+}
+
+// Discard the take: revoke the blob URL (so it can't be played or recovered by a
+// later render), stop any live mic, and clear timers.
+function dropCompare(){
+  if(cmp.mr && cmp.mr.state === 'recording'){ try{ cmp.mr.stop(); }catch(e){} }
+  cmp.mr = null;
+  if(cmp.url){ URL.revokeObjectURL(cmp.url); cmp.url = null; }
+  $('cmpAudio').removeAttribute('src');   // don't leave a revoked URL on the element
+  clearTimeout(cmp.timer); clearTimeout(cmp.stopTimer);
+  cmp.chunks = [];
+  paintCompare(false);
+}
+
+// Called on every new question, so the take never survives into the next word.
+function resetCompare(){
+  dropCompare();
+  const b = $('cmp'); if(!b) return;
+  b.hidden = !canCompare();
+  b.textContent = '🔊 Compare to your own';
+}
+
+function paintCompare(mode){
+  const b = $('cmp'); if(!b) return;
+  b.classList.toggle('rec-live', mode === 'rec');
+  b.classList.toggle('rec-has', mode === 'ready');
+  if(mode === 'rec')       { b.textContent = '⏹ Dừng'; return; }
+  if(mode === 'ready')     { b.textContent = '🔊 Nghe lại'; return; }
+  b.textContent = '🔊 Compare to your own';
+}
+
+async function toggleCompare(){
+  // While recording, the same button stops it.
+  if(cmp.mr && cmp.mr.state === 'recording'){ cmp.mr.stop(); return; }
+
+  // With a take in hand, the button plays it back. Tapping it again re-records.
+  if(cmp.url){
+    const a = $('cmpAudio');
+    a.currentTime = 0;
+    a.play().catch(() => {});
+    return;
+  }
+
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+    cmp.mime = pickMime(); cmp.chunks = [];
+    cmp.mr = new MediaRecorder(stream, cmp.mime ? {mimeType: cmp.mime} : undefined);
+
+    cmp.mr.ondataavailable = e => { if(e.data.size) cmp.chunks.push(e.data); };
+
+    cmp.mr.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());          // release the mic promptly
+      clearTimeout(cmp.timer); clearTimeout(cmp.stopTimer);
+      const blob = new Blob(cmp.chunks, {type: cmp.mr.mimeType || cmp.mime || 'audio/webm'});
+      if(cmp.url) URL.revokeObjectURL(cmp.url);           // one take at a time
+      cmp.url = URL.createObjectURL(blob);
+      $('cmpAudio').src = cmp.url;
+      paintCompare('ready');
+      $('prompt').textContent = 'Now tap the amber button to hear the clip again.';
+    };
+
+    cmp.mr.start();
+    paintCompare('rec');
+    $('prompt').textContent = 'Say it once, then tap Dừng.';
+    cmp.timer = setTimeout(() => { if(cmp.mr && cmp.mr.state === 'recording') cmp.mr.stop(); }, 3000);
+    // safety net: never leave the mic open indefinitely if the tab is abandoned
+    cmp.stopTimer = setTimeout(() => { if(cmp.mr && cmp.mr.state === 'recording') cmp.mr.stop(); }, 30000);
+  }catch(e){
+    // Denied mic, or no device. Say so once, then get out of the way.
+    $('prompt').textContent = 'Microphone unavailable — allow it for this site to compare your own voice.';
+  }
+}
+
 /* ---------- wiring ---------- */
 $('play').onclick = replay;
+$('cmp').onclick = toggleCompare;
 $('again').onclick = replay;
 $('slow').onclick = () => { S.rate = S.rate === 1 ? 0.65 : 1; $('slow').textContent = S.rate === 1 ? 'Slower' : 'Normal'; replay(); };
 $('next').onclick = newQuestion;

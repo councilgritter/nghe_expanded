@@ -162,6 +162,13 @@ After you answer, **every tile becomes playable** — tap between `ngọc` and `
 to hear the difference directly. This is the part that actually trains your ear;
 the scoring is just bookkeeping.
 
+**Compare to your own** records your voice for three seconds and plays it back, so
+you can hear your own attempt next to the clip. It is entirely local: nothing is
+uploaded and the take is discarded the moment you move to the next word. It needs
+microphone permission, and the button only appears where the browser supports
+recording. (This is separate from the flag/record pipeline in
+`human-recordings.md`, which deliberately *does* upload a correction for review.)
+
 The settings panel (gear icon) controls:
 
 - **Accent** — Southern or Northern. Each is a separate set of clips; the drill
