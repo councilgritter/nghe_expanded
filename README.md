@@ -162,22 +162,23 @@ After you answer, **every tile becomes playable** — tap between `ngọc` and `
 to hear the difference directly. This is the part that actually trains your ear;
 the scoring is just bookkeeping.
 
-**Hold-to-record comparison.** There's a button beside Again/Slower that records
-your voice so you can hear your own attempt next to the clip:
+**Compare against your own voice.** A button beside Again/Slower opens an overlay
+that keeps the written word on screen while you record:
 
-- **Press and hold** it while you say the syllable; a pulsing dot shows it's
-  listening. Release and your take is ready.
-- Tap **🔊 Nghe lại** to hear yourself. Nothing plays on its own — you start the
-  audio when you want it.
-- Hold again to replace your take.
-- Moving to the next word **discards** it.
+- A round button sits in the middle with a ring around it. **Press and hold** while
+  you say the syllable — the ring swells and brightens with your actual input
+  volume, so you can see it's hearing you.
+- Let go, and your take appears **beside the original clip**, each with its own play
+  button so you can switch between them and listen for the difference.
+- **Record again** replaces it; **Done** closes and discards.
 
-It is entirely local: nothing is uploaded, stored, or sent anywhere, and no
-microphone stream is left open — the take lives in memory and is released the
-moment you advance. It needs microphone permission and a secure page (HTTPS or
-localhost), and the button only appears where the browser supports recording.
-(This is separate from the flag/record pipeline in `human-recordings.md`, which
-deliberately *does* upload a correction for review.)
+It is entirely local: nothing is uploaded, stored, or sent anywhere, the take is
+discarded when you close the overlay or move to the next word, and the microphone
+is released the moment you let go. It needs microphone permission and a secure page
+(HTTPS or localhost), and the button only appears where the browser supports
+recording. Where Web Audio isn't available the ring falls back to a steady pulse
+instead of tracking volume. (This is separate from the flag/record pipeline in
+`human-recordings.md`, which deliberately *does* upload a correction for review.)
 
 The settings panel (gear icon) controls:
 
