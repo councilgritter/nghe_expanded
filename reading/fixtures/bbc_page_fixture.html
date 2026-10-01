@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<!--
+  Test fixture — NOT a page that is ever served.
+
+  It reproduces the shape of a VOA / BBC article page: chrome around a body of <p>
+  tags, plus a decoy sidebar and a footer so the extractor has something to reject.
+
+  This fixture intentionally carries a style element and a script element, because
+  they are the payload tests/test_sources.py asserts extract_body() strips. Do not
+  delete them: removing them would delete the test's subject and make "boilerplate
+  is removed" unverifiable. The script is loaded by URL rather than written inline
+  so the fixture itself contains no inline code.
+-->
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <title>Trời đẹp ở thành phố lớn</title>
+  <style>.hidden { display: none; }</style>
+  <script src="https://example.test/tracker.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <nav><a href="/">Trang chủ</a> <a href="/z/1777">Tin tức</a></nav>
+  </header>
+
+  <aside class="related">
+    <p>Bài viết liên quan: một đoạn giới thiệu khá dài nằm trong cột phụ, đủ dài để được tính điểm nếu như bộ trích xuất không loại bỏ phần này ra khỏi kết quả cuối cùng của bài báo.</p>
+    <p>Tin khác: thêm một đoạn nữa trong cột phụ, cũng được viết dài để cạnh tranh điểm số với phần thân bài thật sự của bài viết này trên trang.</p>
+  </aside>
+
+  <main>
+    <h1>Trời đẹp ở thành phố lớn</h1>
+    <div class="article-body">
+      <p>Hôm nay trời rất đẹp. Chúng tôi đi học ở trường đại học quốc gia, nơi sinh viên đến từ khắp các tỉnh thành trong cả nước cùng theo học.</p>
+      <p>Sinh viên ở thành phố rất đông. Vào mỗi buổi sáng, dòng người di chuyển trên các tuyến đường chính tạo nên khung cảnh nhộn nhịp và đầy sức sống.</p>
+      <p>Giáo sư giảng bài về kinh tế. Ông giải thích những thay đổi của thị trường trong năm qua và ảnh hưởng của chúng tới đời sống của người dân.</p>
+    </div>
+  </main>
+
+  <figure><figcaption>Ảnh minh hoạ: một góc thành phố vào buổi sáng sớm.</figcaption></figure>
+
+  <footer><p>Bản quyền VOA. Mọi chi tiết xin liên hệ toà soạn.</p></footer>
+</body>
+</html>

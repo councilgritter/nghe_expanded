@@ -1,0 +1,9 @@
+# Runtime
+underthesea>=9.5,<10      # word segmentation + the bundled Vietnamese word lists
+feedparser>=6.0           # RSS
+httpx>=0.28               # DeepSeek + article fetching (sync client)
+beautifulsoup4>=4.12      # boilerplate stripping
+lxml>=6.0                 # BeautifulSoup parser
+
+# Tests
+pytest>=8.0

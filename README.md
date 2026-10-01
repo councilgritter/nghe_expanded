@@ -61,6 +61,7 @@ build_data.py                  turns the two CSVs into data.json
 install_approved.py            superseded by the Action (legacy Colab installer)
 scripts/install_recordings.py  the Action's installer: approved takes → R2
 apps_script/                   the collector + review page (Google Apps Script)
+reading/                       the reading practice module — see reading/README.md
 ```
 
 Audio is **not** in this listing: it is served from R2 and `audio/` is gitignored.
@@ -191,6 +192,33 @@ The settings panel (gear icon) controls:
 - **Vocabulary range** — how common the words are. The top 2,000 syllables cover
   most everyday speech; past about 3,000 the corpus gets noisy
 - **Your weakest contrasts** — the app feeds you more of whatever you're failing
+
+## Reading practice
+
+`reading/` adds a second drill: read real Vietnamese news, simplified to a CEFR level
+you pick, with every word tappable. Long-press a word and its meaning comes up from
+data already on the device — no request, no waiting.
+
+Articles come from **VOA Tiếng Việt** and **BBC News Tiếng Việt**. Each is rewritten by
+DeepSeek at the target level, then split into words by a reconciler that treats a local
+Vietnamese compound dictionary as authoritative: where the dictionary knows a word, it
+wins; where the model and `underthesea` disagree, both readings are kept and the word is
+flagged so the reader can widen or narrow it.
+
+It follows the same shape as the drill above — an offline Python pipeline and a static
+page, no server — so it needs no new infrastructure:
+
+```
+python -m reading.tools.build_dictionary        # once
+python -m reading.pipeline.ingest --cefr B1 --limit 5
+python -m reading.tools.build_site
+python -m http.server 8000                      # from reading/, open /web/index.html
+```
+
+It needs a `DEEPSEEK_API_KEY` for ingest (`reading/.env`), and nothing else. Both news
+sources require attribution, which is stored with each article and always shown in the
+reader. Pipeline, env vars and cost details: `reading/README.md`; design and diagrams:
+`reading/ARCHITECTURE.md`.
 
 ## Changing what gets drilled
 

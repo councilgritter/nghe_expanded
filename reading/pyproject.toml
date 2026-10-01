@@ -1,0 +1,9 @@
+# Config only — the reading module is not distributed as an installable package,
+# so dependencies live in requirements.txt.  Run the tests from this directory:
+#
+#     python -m pytest
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The system temp dir is not writable in every sandbox; nothing here needs it.
+addopts = "-p no:cacheprovider -q"
+filterwarnings = ["error::DeprecationWarning:reading.*"]

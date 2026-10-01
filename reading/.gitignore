@@ -1,0 +1,15 @@
+# Local virtualenv and scratch space
+.venv/
+data/_test/
+.pytest_cache/
+
+# Build artifacts: regenerate with tools/build_dictionary.py
+data/dictionary.sqlite3
+
+# The reading database is local state, never committed
+data/*.sqlite3
+data/*.sqlite3-wal
+data/*.sqlite3-shm
+
+# Local secrets
+.env

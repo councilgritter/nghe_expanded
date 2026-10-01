@@ -1,0 +1,58 @@
+{
+  "_comment": "Fixture article plus the DeepSeek reply used by tests/test_ingest_pipeline.py. The reply is what the stubbed Simplifier returns, so the integration test exercises the real pipeline (segmentation, reconciliation, token map, persistence) with no network and no API key.",
+  "article": {
+    "source": "voa",
+    "guid": "fixture-voa-9000001",
+    "url": "https://www.voatiengviet.com/a/troi-dep-o-thanh-pho-lon/9000001.html",
+    "title": "Trời đẹp ở thành phố lớn",
+    "author": "VOA Tiếng Việt",
+    "published_at": "2025-03-15T00:50:31Z",
+    "original_text": "Hôm nay trời rất đẹp. Chúng tôi đi học ở trường đại học quốc gia. Sinh viên ở thành phố rất đông. Giáo sư giảng bài về kinh tế.",
+    "body_source": "full"
+  },
+  "llm": {
+    "segmented_text": "Hôm_nay trời rất đẹp . Chúng_tôi đi học ở trường đại_học quốc_gia . Sinh_viên ở thành_phố rất đông . Giáo_sư giảng bài về kinh_tế .",
+    "vocab": [
+      {
+        "term": "đại_học",
+        "gloss": "trường học bậc cao, sau khi học xong trung học phổ thông",
+        "cefr": "A2",
+        "example": "Chúng tôi đi học ở trường đại học quốc gia."
+      },
+      {
+        "term": "thành_phố",
+        "gloss": "nơi tập trung đông dân cư, có chính quyền địa phương riêng",
+        "cefr": "A2",
+        "example": "Sinh viên ở thành phố rất đông."
+      },
+      {
+        "term": "kinh_tế",
+        "gloss": "hoạt động sản xuất, buôn bán và tiền tệ của một nước",
+        "cefr": "B1",
+        "example": "Giáo sư giảng bài về kinh tế."
+      }
+    ],
+    "grammar": [
+      {
+        "term": "trạng ngữ chỉ nơi chốn",
+        "gloss": "cụm từ trả lời cho câu hỏi 'ở đâu', thường đứng sau động từ",
+        "cefr": "A2",
+        "example": "Sinh viên ở thành phố rất đông."
+      },
+      {
+        "term": "rất + tính từ",
+        "gloss": "cách nhấn mạnh mức độ của một tính từ",
+        "cefr": "A1",
+        "example": "Hôm nay trời rất đẹp."
+      }
+    ]
+  },
+  "dictionary_entries": [
+    "đại học",
+    "quốc gia",
+    "thành phố",
+    "sinh viên",
+    "giáo sư",
+    "kinh tế"
+  ]
+}

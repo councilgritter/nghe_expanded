@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Trimmed shape of https://www.voatiengviet.com/api/zkvypl-vomx-tpejqup (Tin tức).
+     Two items: the first carries an HTML entity and a CDATA-ish summary, the second
+     exists to prove ordering and dedupe. -->
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Tin tức - VOA</title>
+    <link>https://www.voatiengviet.com/z/1777</link>
+    <description>Tin tức Việt Nam, Hoa Kỳ, thế giới nhanh, cập nhật.</description>
+    <language>vi</language>
+    <copyright>Bản quyền 2010 - VOA</copyright>
+    <lastBuildDate>Sat, 15 Mar 2025 07:50:31 +0700</lastBuildDate>
+    <atom:link href="https://www.voatiengviet.com/api/zkvypl-vomx-tpejqup" rel="self" type="application/rss+xml" />
+    <item>
+      <title>Trời đẹp ở thành phố lớn</title>
+      <description>Hôm nay trời rất đẹp. Sinh viên ở thành phố rất đông &amp; nhộn nhịp.</description>
+      <link>https://www.voatiengviet.com/a/troi-dep-o-thanh-pho-lon/9000001.html</link>
+      <guid>https://www.voatiengviet.com/a/troi-dep-o-thanh-pho-lon/9000001.html</guid>
+      <pubDate>Sat, 15 Mar 2025 07:50:31 +0700</pubDate>
+      <author>VietnameseWeb@voanews.com (VOA Tiếng Việt)</author>
+      <category>Việt Nam</category>
+    </item>
+    <item>
+      <title>Giáo sư giảng bài về kinh tế</title>
+      <description><![CDATA[<p>Giáo sư giảng bài về <b>kinh tế</b> cho sinh viên đại học quốc gia.</p>]]></description>
+      <link>https://www.voatiengviet.com/a/giao-su-giang-bai-ve-kinh-te/9000002.html</link>
+      <guid>https://www.voatiengviet.com/a/giao-su-giang-bai-ve-kinh-te/9000002.html</guid>
+      <pubDate>Fri, 14 Mar 2025 09:00:00 +0700</pubDate>
+      <category>Kinh tế</category>
+    </item>
+  </channel>
+</rss>
