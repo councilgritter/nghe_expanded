@@ -59,8 +59,16 @@ button:focus-visible{outline:2px solid var(--amber);outline-offset:3px}
 }
 .sub button:hover{color:#e6ecf5;border-color:var(--muted)}
 /* compare-to-your-own: local mic only, nothing is uploaded */
-.sub button.rec-live{color:#ffb4a8;border-color:var(--no)}
+#cmp{display:inline-flex;align-items:center;gap:7px;touch-action:none;
+  -webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.sub button.rec-live{color:#ffb4a8;border-color:var(--no);animation:pulse 1s ease-in-out infinite}
 .sub button.rec-has{color:var(--amber);border-color:var(--amber)}
+#cmpDot{width:8px;height:8px;border-radius:50%;background:currentColor;opacity:.35;flex:none;transition:opacity .15s}
+#cmp.rec-live #cmpDot{opacity:1}
+#cmpPlay{color:var(--amber);border-color:var(--amber)}
+#cmpPlay[hidden]{display:none}
+@media (max-width:430px){ #cmp .cmpLong{display:none} }
+@media (max-width:560px){ #cmp{font-size:12px;padding:7px 10px} .sub{gap:7px} }
 .prompt{font-size:13px;color:var(--muted);text-align:center;min-height:1.2em}
 
 /* --- answer tiles: the diacritics are the content --- */
@@ -177,7 +185,8 @@ input[type=range]{flex:1;accent-color:var(--amber)}
     <div class="sub">
       <button id="again">Again</button>
       <button id="slow">Slower</button>
-      <button id="cmp" hidden>🔊 Compare to your own</button>
+      <button id="cmp" hidden><i id="cmpDot"></i><span id="cmpHold">Hold to record</span><span class="cmpLong"> your voice</span></button>
+      <button id="cmpPlay" hidden>🔊 Nghe lại</button>
     </div>
     <p class="prompt" id="prompt">Listen, then pick what you heard.</p>
   </div>
@@ -746,24 +755,28 @@ function uploadRec(blob, meta){
    Entirely local and deliberately separate from the correction recorder above.
    Nothing here is uploaded, kept, or sent anywhere: the clip lives in memory as
    an object URL, is discarded when you move to the next question, and the mic
-   stream is stopped the moment recording ends. It needs no FLAG_ENDPOINT. */
-const cmp = {mr:null, chunks:[], url:null, mime:'', timer:null, stopTimer:null};
+   stream is stopped the moment you let go. It needs no FLAG_ENDPOINT.
+
+   Hold the button to record (pointer events, so mouse and touch behave the same);
+   releasing arms the play button instead of auto-playing, so nothing makes a
+   sound until you ask it to. */
+const cmp = {mr:null, chunks:[], url:null, mime:'', hold:false, maxTimer:null, shortTimer:null};
 
 // Recording needs the mic + MediaRecorder. Nothing else — no collector involved.
 function canCompare(){
   return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
 }
 
-// Discard the take: revoke the blob URL (so it can't be played or recovered by a
-// later render), stop any live mic, and clear timers.
+// Discard the take: revoke the blob URL, stop any live mic, and clear timers.
 function dropCompare(){
-  if(cmp.mr && cmp.mr.state === 'recording'){ try{ cmp.mr.stop(); }catch(e){} }
-  cmp.mr = null;
+  const mr = cmp.mr;
+  cmp.mr = null; cmp.hold = false;
+  if(mr && mr.state === 'recording'){ try{ mr.stop(); }catch(e){} }
   if(cmp.url){ URL.revokeObjectURL(cmp.url); cmp.url = null; }
-  $('cmpAudio').removeAttribute('src');   // don't leave a revoked URL on the element
-  clearTimeout(cmp.timer); clearTimeout(cmp.stopTimer);
+  $('cmpAudio').removeAttribute('src');
+  clearTimeout(cmp.maxTimer); clearTimeout(cmp.shortTimer);
   cmp.chunks = [];
-  paintCompare(false);
+  paintCompare('idle');
 }
 
 // Called on every new question, so the take never survives into the next word.
@@ -771,63 +784,130 @@ function resetCompare(){
   dropCompare();
   const b = $('cmp'); if(!b) return;
   b.hidden = !canCompare();
-  b.textContent = '🔊 Compare to your own';
+  if(!canCompare()) $('cmpPlay').hidden = true;
 }
 
 function paintCompare(mode){
-  const b = $('cmp'); if(!b) return;
+  const b = $('cmp'), p = $('cmpPlay');
+  if(!b) return;
   b.classList.toggle('rec-live', mode === 'rec');
-  b.classList.toggle('rec-has', mode === 'ready');
-  if(mode === 'rec')       { b.textContent = '⏹ Dừng'; return; }
-  if(mode === 'ready')     { b.textContent = '🔊 Nghe lại'; return; }
-  b.textContent = '🔊 Compare to your own';
+  b.classList.toggle('rec-has', mode === 'has');
+  $('cmpHold').textContent = mode === 'rec' ? 'Recording…'
+                            : mode === 'has' ? 'Your take' : 'Hold to record';
+  const has = mode !== 'idle';
+  b.setAttribute('aria-label', has ? 'Record again: hold to replace your take'
+                                   : 'Record your own voice to compare');
+  if(p) p.hidden = !has;
 }
 
-async function toggleCompare(){
-  // While recording, the same button stops it.
-  if(cmp.mr && cmp.mr.state === 'recording'){ cmp.mr.stop(); return; }
+// Held long enough to be a real attempt? Guards against an accidental tap
+// producing a silent 40 ms blob, which would look broken.
+const CMP_MIN_MS = 350;
 
-  // With a take in hand, the button plays it back. Tapping it again re-records.
-  if(cmp.url){
-    const a = $('cmpAudio');
-    a.currentTime = 0;
-    a.play().catch(() => {});
-    return;
+function cmpDown(e){
+  if(!canCompare() || cmp.hold) return;
+  // keep the pointer focused on this button so a finger sliding off still
+  // delivers pointerup here, rather than stranding us mid-recording
+  const el = e && (e.currentTarget || e.target);
+  if(e && e.pointerId != null && el && el.setPointerCapture){
+    try{ el.setPointerCapture(e.pointerId); }catch(err){}
   }
+  if(e && e.preventDefault) e.preventDefault();
+  if(cmp.mr && cmp.mr.state === 'recording'){ try{ cmp.mr.stop(); }catch(err){} }
+  cmp.hold = true; cmp.holdStart = Date.now(); cmp.discard = false;
+  $('prompt').textContent = 'Hold it down and say the syllable.';
+  startTake();
+}
 
+async function startTake(){
   try{
     const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+    // let go while the permission prompt was up: don't leave the mic running
+    if(!cmp.hold){ stream.getTracks().forEach(t => t.stop()); return; }
     cmp.mime = pickMime(); cmp.chunks = [];
     cmp.mr = new MediaRecorder(stream, cmp.mime ? {mimeType: cmp.mime} : undefined);
-
     cmp.mr.ondataavailable = e => { if(e.data.size) cmp.chunks.push(e.data); };
 
     cmp.mr.onstop = () => {
-      stream.getTracks().forEach(t => t.stop());          // release the mic promptly
-      clearTimeout(cmp.timer); clearTimeout(cmp.stopTimer);
+      stream.getTracks().forEach(t => t.stop());     // release the mic promptly
+      clearTimeout(cmp.maxTimer); clearTimeout(cmp.shortTimer);
+      const tooShort = cmp.discard || (Date.now() - cmp.holdStart) < CMP_MIN_MS;
       const blob = new Blob(cmp.chunks, {type: cmp.mr.mimeType || cmp.mime || 'audio/webm'});
-      if(cmp.url) URL.revokeObjectURL(cmp.url);           // one take at a time
+      cmp.mr = null; cmp.chunks = []; cmp.discard = false;
+      if(tooShort || !blob.size){
+        cmp.hold = false;
+        paintCompare('idle');
+        $('prompt').textContent = 'Hold the button down while you say it.';
+        return;
+      }
+      if(cmp.url) URL.revokeObjectURL(cmp.url);      // one take at a time
       cmp.url = URL.createObjectURL(blob);
       $('cmpAudio').src = cmp.url;
-      paintCompare('ready');
-      $('prompt').textContent = 'Now tap the amber button to hear the clip again.';
+      cmp.hold = false;
+      paintCompare('has');
+      $('prompt').textContent = 'Tap 🔊 Nghe lại to hear yourself, then the amber button for the clip.';
     };
 
     cmp.mr.start();
     paintCompare('rec');
-    $('prompt').textContent = 'Say it once, then tap Dừng.';
-    cmp.timer = setTimeout(() => { if(cmp.mr && cmp.mr.state === 'recording') cmp.mr.stop(); }, 3000);
-    // safety net: never leave the mic open indefinitely if the tab is abandoned
-    cmp.stopTimer = setTimeout(() => { if(cmp.mr && cmp.mr.state === 'recording') cmp.mr.stop(); }, 30000);
-  }catch(e){
+    // safety net: never leave the mic open if the release event never arrives
+    cmp.maxTimer = setTimeout(() => { if(cmp.mr && cmp.mr.state === 'recording') cmp.mr.stop(); }, 20000);
+  }catch(err){
     // Denied mic, or no device. Say so once, then get out of the way.
+    cmp.hold = false;
+    paintCompare('idle');
     $('prompt').textContent = 'Microphone unavailable — allow it for this site to compare your own voice.';
   }
 }
 
+function cmpUp(e){
+  if(!cmp.hold) return;
+  if(e && e.preventDefault) e.preventDefault();
+  cmp.hold = false;
+  if(cmp.mr && cmp.mr.state === 'recording') cmp.mr.stop();   // onstop builds the take
+}
+
+// The pointer escaped the button or the window lost focus: abandon the take
+// rather than guessing what was intended. A stray hold never becomes audio.
+function cmpAbort(){
+  if(!cmp.hold) return;
+  cmp.discard = true;
+  if(cmp.mr && cmp.mr.state === 'recording') cmp.mr.stop();
+}
+
+function playCmp(){
+  if(!cmp.url) return;
+  const a = $('cmpAudio');
+  a.currentTime = 0;
+  a.play().catch(() => {});
+}
+
+function paintCmpPlay(on){
+  const p = $('cmpPlay');
+  if(p && !p.hidden) p.textContent = on ? '⏹ Đang phát' : '🔊 Nghe lại';
+}
+
+/* ---------- compare-to-your-own wiring ----------
+   Hold-to-record uses pointer events: no record-on-click, because a click fires
+   on release too. The click handler below is only a keyboard fallback. */
+$('cmp').addEventListener('pointerdown', cmpDown);
+$('cmp').addEventListener('pointerup', cmpUp);
+$('cmp').addEventListener('pointercancel', cmpAbort);   // OS took over the gesture
+$('cmp').addEventListener('contextmenu', e => e.preventDefault());  // no long-press menu
+$('cmp').addEventListener('click', e => {
+  if(e.detail === 0){          // 0 means keyboard-activated (Enter/Space), not a pointer
+    if(cmp.hold) cmpUp(e);     // second press: finish the take
+    else cmpDown(e);           // first press: start it, released by the same key
+  }
+});
+$('cmpPlay').onclick = playCmp;
+window.addEventListener('blur', cmpAbort);              // alt-tabbed mid-hold: drop it
+$('cmpAudio').addEventListener('play',  () => paintCmpPlay(true));
+$('cmpAudio').addEventListener('ended', () => paintCmpPlay(false));
+$('cmpAudio').addEventListener('pause', () => paintCmpPlay(false));
+
 /* ---------- wiring ---------- */
 $('play').onclick = replay;
-$('cmp').onclick = toggleCompare;
 $('again').onclick = replay;
 $('slow').onclick = () => { S.rate = S.rate === 1 ? 0.65 : 1; $('slow').textContent = S.rate === 1 ? 'Slower' : 'Normal'; replay(); };
 $('next').onclick = newQuestion;

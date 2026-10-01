@@ -162,12 +162,22 @@ After you answer, **every tile becomes playable** — tap between `ngọc` and `
 to hear the difference directly. This is the part that actually trains your ear;
 the scoring is just bookkeeping.
 
-**Compare to your own** records your voice for three seconds and plays it back, so
-you can hear your own attempt next to the clip. It is entirely local: nothing is
-uploaded and the take is discarded the moment you move to the next word. It needs
-microphone permission, and the button only appears where the browser supports
-recording. (This is separate from the flag/record pipeline in
-`human-recordings.md`, which deliberately *does* upload a correction for review.)
+**Hold-to-record comparison.** There's a button beside Again/Slower that records
+your voice so you can hear your own attempt next to the clip:
+
+- **Press and hold** it while you say the syllable; a pulsing dot shows it's
+  listening. Release and your take is ready.
+- Tap **🔊 Nghe lại** to hear yourself. Nothing plays on its own — you start the
+  audio when you want it.
+- Hold again to replace your take.
+- Moving to the next word **discards** it.
+
+It is entirely local: nothing is uploaded, stored, or sent anywhere, and no
+microphone stream is left open — the take lives in memory and is released the
+moment you advance. It needs microphone permission and a secure page (HTTPS or
+localhost), and the button only appears where the browser supports recording.
+(This is separate from the flag/record pipeline in `human-recordings.md`, which
+deliberately *does* upload a correction for review.)
 
 The settings panel (gear icon) controls:
 
