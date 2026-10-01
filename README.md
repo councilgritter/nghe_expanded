@@ -212,8 +212,13 @@ page, no server — so it needs no new infrastructure:
 python -m reading.tools.build_dictionary        # once
 python -m reading.pipeline.ingest --cefr B1 --limit 5
 python -m reading.tools.build_site
-python -m http.server 8000                      # from reading/, open /web/index.html
+python -m http.server 8000                      # from the repo root, open /index.html
 ```
+
+The app asks **Nghe / Nói** or **Đọc / Viết** when it opens; this module is the Đọc
+half, and settings can switch. The reading page links back, so neither half is a
+one-way trip. (Writing — a task set after the article — will be a further stage in
+this same flow rather than a separate mode.)
 
 It needs a `DEEPSEEK_API_KEY` for ingest (`reading/.env`), and nothing else. Both news
 sources require attribution, which is stored with each article and always shown in the

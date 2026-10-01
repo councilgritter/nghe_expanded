@@ -35,6 +35,9 @@
     display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
   header h1{font-size:1rem;margin:0;font-weight:600;letter-spacing:.02em}
   header .sp{flex:1}
+  header a.home{color:var(--dim);text-decoration:none;font-size:.85rem;
+    border:1px solid var(--line);border-radius:.55rem;padding:.4rem .6rem}
+  header a.home:hover{color:var(--ink);border-color:var(--accent)}
   select,button{font:inherit;color:var(--ink);background:var(--panel);
     border:1px solid var(--line);border-radius:.55rem;padding:.4rem .6rem}
   button{cursor:pointer}
@@ -106,6 +109,9 @@
 <body>
 
 <header>
+  <!-- Back to the mode picker, so switching between the app's two halves is never
+       a one-way trip. The entry screen asks each time; this is the way there. -->
+  <a class="home" href="../../index.html" title="Về trang chọn chế độ">← Trang chủ</a>
   <h1>Đọc</h1>
   <span class="sp"></span>
   <select id="level" title="Trình độ"></select>

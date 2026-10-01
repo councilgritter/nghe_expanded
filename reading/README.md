@@ -111,8 +111,12 @@ map and pre-teach rows in place.
 
 ```bash
 python -m reading.tools.build_site
-python -m http.server 8000    # from reading/, then open /web/index.html
+python -m http.server 8000    # from the repo root, then open /index.html
 ```
+
+The app's entry screen asks whether you want **Nghe / Nói** or **Đọc / Viết**; this
+module is the Đọc half. `/reading/web/index.html` also works directly, and its header
+links back to the entry screen so the two halves are never a one-way trip.
 
 `data/site/` is the deployable artifact — the reading equivalent of `data.json`, and
 deliberately not gitignored so it can be published alongside the page. Regenerate it

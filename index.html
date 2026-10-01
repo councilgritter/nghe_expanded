@@ -145,18 +145,19 @@ button:focus-visible{outline:2px solid var(--amber);outline-offset:3px}
 .chip{padding:9px 15px;border-radius:999px;border:1px solid var(--edge);font-size:14px;color:var(--muted)}
 .chip.on{background:#e6ecf5;color:var(--ink);border-color:#e6ecf5;font-weight:600}
 
-/* --- first-run accent picker --- */
+/* --- first-run pickers: mode (the app's entry) and accent (inside the drill) --- */
 .picker{position:fixed;inset:0;z-index:30;background:var(--ink);display:none;
   align-items:center;justify-content:center;padding:calc(env(safe-area-inset-top,0px) + 20px) var(--pad)}
 .picker.open{display:flex}
 .picker .pwrap{max-width:420px;width:100%}
 .picker h2{font-size:24px;font-weight:800;margin:0 0 8px;text-align:center}
 .picker p{color:var(--muted);font-size:14px;margin:0 0 26px;text-align:center}
-.picker .accent{display:block;width:100%;margin:10px 0;padding:18px 20px;border-radius:14px;
-  border:1px solid var(--edge);background:var(--slate);text-align:left}
-.picker .accent:hover,.picker .accent:focus-visible{border-color:var(--amber)}
-.picker .accent b{display:block;font-size:18px;font-weight:600;color:#e6ecf5}
-.picker .accent span{display:block;font-size:13px;color:var(--muted);margin-top:3px}
+.picker .accent,.picker .choice{display:block;width:100%;margin:10px 0;padding:18px 20px;
+  border-radius:14px;border:1px solid var(--edge);background:var(--slate);text-align:left}
+.picker .accent:hover,.picker .accent:focus-visible,
+.picker .choice:hover,.picker .choice:focus-visible{border-color:var(--amber)}
+.picker .accent b,.picker .choice b{display:block;font-size:18px;font-weight:600;color:#e6ecf5}
+.picker .accent span,.picker .choice span{display:block;font-size:13px;color:var(--muted);margin-top:3px}
 
 /* --- flag a bad clip / record a replacement --- */
 .flag{border:1px solid var(--no);color:var(--no);padding:12px 20px;border-radius:10px;font-size:15px;font-weight:600}
@@ -326,10 +327,27 @@ input[type=range]{flex:1;accent-color:var(--amber)}
   </div>
 </div>
 
+<!-- The app's entry point. Listening/speaking is the syllable drill; reading/writing
+     is the article flow, which lives in reading/web/ because it needs its own page.
+     Shown on every open so neither half is ever more than one tap away. -->
+<div class="picker" id="modePicker">
+  <div class="pwrap">
+    <h2>What do you want to practise?</h2>
+    <p>Nghe/nói drills single syllables. Đọc/viết gives you a real news article to
+    read, with every word tappable. You can switch any time in settings.</p>
+    <button class="choice" id="pickListen"><b>Listening / Speaking</b><span>Nghe / Nói</span></button>
+    <button class="choice" id="pickLiteracy"><b>Reading / Writing</b><span>Đọc / Viết</span></button>
+  </div>
+</div>
+
 <div class="sheet" id="sheet">
  <div class="wrap">
   <h2>Settings</h2>
   <p class="note" id="audioNote"></p>
+
+  <h3>What you're practising</h3>
+  <div class="chips" id="modeChips"></div>
+  <p class="note">Reading/writing opens in its own page — settings come with it there.</p>
 
   <h3>Accent</h3>
   <div class="chips" id="regionChips"></div>
@@ -378,6 +396,7 @@ const S = {
   data:null, item:null, opts:[], answered:false,
   streak:0, today:0, right:0, seen:0,
   audioOK:null, voice:null, rate:1,
+  mode: localStorage.getItem('vn.mode') || '',
   stats: JSON.parse(localStorage.getItem('vn.stats') || '{}'),
   cfg: Object.assign(
     {axes:[0,1,2,3], diffs:[1,2], rank:3000, region:'south'},
@@ -388,6 +407,21 @@ if(S.cfg.region !== 'south' && S.cfg.region !== 'north') S.cfg.region = 'south';
 const $ = id => document.getElementById(id);
 const saveCfg = () => localStorage.setItem('vn.cfg', JSON.stringify(S.cfg));
 const saveStats = () => localStorage.setItem('vn.stats', JSON.stringify(S.stats));
+const saveMode = () => { try{ localStorage.setItem('vn.mode', S.mode); }catch(e){} };
+
+/* ---------- mode: the app's two halves ----------
+   Listening/speaking is this page. Reading/writing is the article flow in
+   reading/web/, which has its own page because it needs its own assets — so
+   switching to it is a navigation, not a view swap. Reading/writing will gain a
+   writing stage after the article; that lives inside that flow, not here. */
+const LITERACY_URL = 'reading/web/index.html';
+function goMode(id){
+  S.mode = id; saveMode();
+  $('modePicker').classList.remove('open');
+  $('sheet').classList.remove('open');
+  if(id === 'literacy'){ location.href = LITERACY_URL; return; }
+  startListening();
+}
 
 /* ---------- flagging config ----------
    Flags stay on the tester's device (export as CSV in Settings) until you point
@@ -608,6 +642,17 @@ function toggle(arr, i){
   if(k < 0) arr.push(i); else if(arr.length > 1) arr.splice(k, 1);
 }
 function buildSheet(){
+  const MODES = [['listen','Listening / Speaking'],['literacy','Reading / Writing']];
+  const mh = $('modeChips'); mh.innerHTML = '';
+  MODES.forEach(([id,label]) => {
+    const b = document.createElement('button');
+    b.className = 'chip' + (S.mode === id ? ' on' : '');
+    b.textContent = label;
+    // listen stays put; literacy is a different page, so this navigates
+    b.onclick = () => goMode(id);
+    mh.appendChild(b);
+  });
+
   chips($('axisChips'), ['Tones','Vowels','First sound','Final sound'],
         () => S.cfg.axes, i => toggle(S.cfg.axes, i));
   chips($('diffChips'), ['Easy','Medium','Hard'],
@@ -1094,6 +1139,8 @@ $('reset').onclick = () => {
 };
 addEventListener('keydown', e => {
   if($('sheet').classList.contains('open') || panelsOpen()) return;
+  // the entry picker swallows keys too: there is no question to answer yet
+  if($('modePicker').classList.contains('open') || $('picker').classList.contains('open')) return;
   if(e.key === ' '){ e.preventDefault(); replay(); }
   else if(e.key === 'Enter' && S.answered) newQuestion();
   else if('1234'.includes(e.key)){
@@ -1113,22 +1160,41 @@ function chooseAccent(region){
 }
 $('pickSouth').onclick = () => chooseAccent('south');
 $('pickNorth').onclick = () => chooseAccent('north');
+$('pickListen').onclick = () => goMode('listen');
+$('pickLiteracy').onclick = () => goMode('literacy');
 
-fetch('data.json').then(r => r.json()).then(d => {
-  S.data = d;
-  S.tone = d.syllables.map(toneOf);   // precompute each syllable's tone once
-  let set, hadCfg;
-  try{ set = localStorage.getItem('vn.accentSet'); hadCfg = localStorage.getItem('vn.cfg'); }catch(e){}
-  // returning users keep their accent; only a brand-new visitor is asked
-  if(!set && hadCfg){ try{ localStorage.setItem('vn.accentSet','1'); }catch(e){} set = '1'; }
-  if(!set){
-    $('picker').classList.add('open');   // wait for a choice, then start
-  } else {
-    paintStrip(); newQuestion();
+/* data.json is 428 KB and only the drill needs it, so it is fetched on the way
+   into listening rather than at page load — a reading visitor never pulls it. */
+let dataPromise = null;
+function loadData(){
+  if(!dataPromise){
+    dataPromise = fetch('data.json').then(r => r.json()).then(d => {
+      S.data = d;
+      S.tone = d.syllables.map(toneOf);   // precompute each syllable's tone once
+      return d;
+    });
   }
-}).catch(() => {
-  $('prompt').textContent = 'Could not load data.json. Check it sits next to index.html.';
-});
+  return dataPromise;
+}
+
+function startListening(){
+  loadData().then(() => {
+    let set, hadCfg;
+    try{ set = localStorage.getItem('vn.accentSet'); hadCfg = localStorage.getItem('vn.cfg'); }catch(e){}
+    // returning users keep their accent; only a brand-new visitor is asked
+    if(!set && hadCfg){ try{ localStorage.setItem('vn.accentSet','1'); }catch(e){} set = '1'; }
+    if(!set){
+      $('picker').classList.add('open');   // wait for a choice, then start
+    } else {
+      paintStrip(); newQuestion();
+    }
+  }).catch(() => {
+    $('prompt').textContent = 'Could not load data.json. Check it sits next to index.html.';
+  });
+}
+
+// Entry point: ask every time, so neither half is more than one tap away.
+$('modePicker').classList.add('open');
 </script>
 </body>
 </html>
