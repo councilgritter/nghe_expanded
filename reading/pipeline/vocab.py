@@ -40,8 +40,14 @@ def preteach_rows(
     vocab: Sequence[PreTeachItem],
     grammar: Sequence[PreTeachItem],
     default_cefr: str = "",
+    dictionary=None,
 ) -> list[dict]:
-    """Rows for the ``preteach`` table, deduplicated on (kind, term)."""
+    """Rows for the ``preteach`` table, deduplicated on (kind, term).
+
+    ``dictionary``, when supplied, adds the English gloss for each term so the
+    pre-teach panel reads English-first like a tap does.  Grammar points are pattern
+    names rather than dictionary words, so they simply come back without one.
+    """
     rows: list[dict] = []
     seen: set[tuple[str, str]] = set()
     for kind, items in ((VOCAB, vocab), (GRAMMAR, grammar)):
@@ -51,11 +57,13 @@ def preteach_rows(
             if not term or (kind, term) in seen:
                 continue
             seen.add((kind, term))
+            gloss_en = dictionary.primary_gloss(term) if dictionary is not None else None
             rows.append(
                 {
                     "kind": kind,
                     "term": term,
                     "gloss": plain(item.gloss),
+                    "gloss_en": gloss_en,
                     "cefr_level": (item.cefr or default_cefr).upper() or None,
                     "example": plain(item.example)[:MAX_EXAMPLE_CHARS] or None,
                     "ordinal": ordinal,
@@ -69,7 +77,8 @@ def definitions_from_preteach(vocab: Iterable[PreTeachItem]) -> dict[str, Defini
     """Vocab glosses keyed by underscore form, for the token map.
 
     Only vocabulary contributes: a grammar point's term is a pattern name, not a
-    word the reader can tap.
+    word the reader can tap.  These glosses are Vietnamese; the token map pairs them
+    with the English gloss from the local dictionary.
     """
     out: dict[str, Definition] = {}
     for item in vocab:
@@ -81,6 +90,7 @@ def definitions_from_preteach(vocab: Iterable[PreTeachItem]) -> dict[str, Defini
             term,
             Definition(
                 text=gloss,
+                vietnamese=gloss,
                 cefr=(item.cefr.upper() or None) if item.cefr else None,
                 source=SRC_PRET_EACH,
             ),

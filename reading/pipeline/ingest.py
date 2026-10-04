@@ -34,6 +34,7 @@ from reading.pipeline.text import (
     counts_to_spans,
     grouping_from_underscores,
     syllables_with_offsets,
+    word_change_ratio,
 )
 from reading.pipeline.tokens import build_token_map
 from reading.pipeline.vocab import definitions_from_preteach, preteach_rows
@@ -43,6 +44,12 @@ from reading.storage.dictionary import CompoundDictionary
 
 QUALITY_OK = "ok"
 QUALITY_MISMATCH = "syllable_mismatch"
+
+# Below this share of rewritten words, the model has transcribed rather than
+# simplified.  It is a warning rather than a failure because C1/C2 legitimately stay
+# close to the source, so the flag is only applied at the levels that require change.
+MIN_CHANGE_RATIO = 0.05
+SIMPLIFYING_LEVELS = ("A1", "A2", "B1", "B2")
 
 
 @dataclass
@@ -56,6 +63,8 @@ class ArticleResult:
     tokens: int = 0
     reconcile: ReconcileStats | None = None
     reason: str = ""
+    # Share of the source's words the rewrite changed.  A transcription scores ~0.
+    change_ratio: float = 0.0
     # Token usage DeepSeek reported for this article's one call, so the real cost
     # is visible rather than estimated.
     usage: dict = field(default_factory=dict)
@@ -100,11 +109,15 @@ def ingest_article(
     dictionary: CompoundDictionary | None,
     cfg: Settings | None = None,
     refresh: bool = False,
+    refetch_body: bool = False,
 ) -> ArticleResult:
     """Run one article end to end and persist it.
 
     ``refresh=True`` re-generates an (article, level) pair that already exists,
     replacing its version, token map and pre-teach rows in place.
+    ``refetch_body=True`` re-scrapes the article page even when the article is
+    already stored, replacing the stored body — the escape hatch for a fix to the
+    extraction heuristic, which otherwise could never reach rows already written.
     """
     cfg = cfg or default_settings
     result = ArticleResult(source=raw.source, title=raw.title, status="failed")
@@ -122,6 +135,17 @@ def ingest_article(
         article_id = int(existing["id"])
         body = existing["original_text"]
         body_source = existing["body_source"]
+        # A stale stored body is worth re-scraping only when asked, or when it is
+        # too short to have been a real article body in the first place.
+        short_stored = len(body.strip()) < cfg.min_body_chars
+        if cfg.fetch_full_text and (refetch_body or short_stored):
+            fetched = fetch_body(raw.url, cfg)
+            polite_delay(cfg)
+            if fetched.ok and len(fetched.text.strip()) >= cfg.min_body_chars:
+                body, body_source = fetched.text, "full"
+                db.update_article_body(conn, article_id, body, body_source)
+            elif not fetched.ok and fetched.reason:
+                result.reason = f"body fallback: {fetched.reason}; "
     else:
         article_id = None
         # 1. Body: full text when available, the RSS summary otherwise.
@@ -136,6 +160,17 @@ def ingest_article(
 
     if not body.strip():
         result.reason += "no article text available"
+        return result
+
+    # Too short to be a reading exercise: a video item's lede, or a failed scrape
+    # that fell back to the RSS summary.  Skipped *before* the paid call, so a
+    # 200-character stub never costs a simplification.
+    if len(body.strip()) < cfg.min_body_chars:
+        result.status = "skipped"
+        result.reason += (
+            f"body too short for reading practice "
+            f"({len(body.strip())} < {cfg.min_body_chars} chars, source={body_source})"
+        )
         return result
 
     # 2. Simplify at the target level.
@@ -183,10 +218,22 @@ def ingest_article(
     )
     stats = summarize(spans)
 
-    # 5. Definitions come from the pre-teach glosses; everything else is deferred
-    #    to the reader's tap-time fallback.
+    # 5. Definitions: the English meaning from the local Việt→Anh dictionary, the
+    #    Vietnamese gloss from the pre-teach list, both free.  Anything left over is
+    #    deferred to the reader's tap-time fallback.
     definitions = definitions_from_preteach(simplification.vocab)
     tokens = build_token_map(plain, syllables, spans, definitions, dictionary)
+
+    # How much of the article actually changed.  Measured here because a model that
+    # transcribes produces a flawless-looking bundle that is not simplified at all.
+    change_ratio = word_change_ratio(body, plain)
+    if change_ratio < MIN_CHANGE_RATIO and level in SIMPLIFYING_LEVELS:
+        note = (
+            f"rewrite changed only {change_ratio:.1%} of words — the model may have "
+            f"transcribed the source instead of simplifying it"
+        )
+        notes = (notes + "; " if notes else "") + note
+        result.reason += ("warning: " + note + "; ")
 
     # 6. Persist.  A reused article is not re-inserted — only its new version is.
     if article_id is None:
@@ -224,7 +271,10 @@ def ingest_article(
         conn,
         version_id,
         preteach_rows(
-            simplification.vocab, simplification.grammar, default_cefr=level
+            simplification.vocab,
+            simplification.grammar,
+            default_cefr=level,
+            dictionary=dictionary,
         ),
     )
 
@@ -234,6 +284,7 @@ def ingest_article(
     result.quality = quality
     result.tokens = row_count
     result.reconcile = stats
+    result.change_ratio = change_ratio
     result.usage = simplification.usage or {}
     return result
 
@@ -252,6 +303,8 @@ def run_ingest(
     limit: int | None = None,
     verbose: bool = True,
     refresh: bool = False,
+    refetch_body: bool = False,
+    refresh_outdated: bool = False,
 ) -> RunStats:
     """Fetch feeds (unless ``articles`` is given) and ingest what is new."""
     import httpx
@@ -271,11 +324,24 @@ def run_ingest(
     # `refresh` means "re-generate what is already there", NOT "treat everything as
     # new" — so it is bounded by the pairs already paid for.  Without that split,
     # --refresh with no --limit would re-ingest the entire feed and spend on all of it.
-    fresh = [
-        a
-        for a in articles
-        if db.version_exists(conn, a.source, a.guid, cefr_level) == refresh
-    ]
+    if refresh_outdated:
+        # Regenerate only what a prompt change has made stale.  Re-paying for pairs
+        # already produced with the current prompt is pure waste, and after a run
+        # that failed halfway it is the difference between paying for the two that
+        # failed and paying for all of them again.
+        refresh = True
+        fresh = [
+            a
+            for a in articles
+            if db.version_prompt_version(conn, a.source, a.guid, cefr_level)
+            not in (None, prompts.PROMPT_VERSION)
+        ]
+    else:
+        fresh = [
+            a
+            for a in articles
+            if db.version_exists(conn, a.source, a.guid, cefr_level) == refresh
+        ]
     stats.skipped_duplicates = len(articles) - len(fresh)
     if cap:
         fresh = fresh[:cap]
@@ -288,7 +354,8 @@ def run_ingest(
             print(f"[{index}/{len(fresh)}] {raw.source}: {raw.title[:70]}")
         try:
             result = ingest_article(
-                conn, raw, cefr_level, client, dictionary, cfg, refresh=refresh
+                conn, raw, cefr_level, client, dictionary, cfg,
+                refresh=refresh, refetch_body=refetch_body,
             )
         except Exception as exc:  # noqa: BLE001 - one article never kills the run
             result = ArticleResult(
@@ -317,6 +384,7 @@ def _print_result(result: ArticleResult) -> None:
         )
         flag = "" if result.quality == QUALITY_OK else f"  [{result.quality}]"
         print(f"    ingested: {detail}{flag}")
+        print(f"    rewrite:  {result.change_ratio:.0%} of words changed")
         spent = usage_line(result.usage)
         if spent:
             print(f"    cost: {spent}")
@@ -324,6 +392,21 @@ def _print_result(result: ArticleResult) -> None:
             print(f"    note: {result.reason}")
     else:
         print(f"    {result.status}: {result.reason}")
+
+
+def _reasoning_tokens(usage: dict) -> int:
+    """Reasoning tokens, which DeepSeek bills as completion tokens.
+
+    They are a nested field, so :func:`run_totals` cannot sum them from the flat keys
+    it walks.  For this pipeline they dominate the bill, so they are worth showing.
+    """
+    details = usage.get("completion_tokens_details")
+    if not isinstance(details, dict):
+        return 0
+    try:
+        return int(details.get("reasoning_tokens") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def usage_line(usage: dict) -> str:
@@ -336,6 +419,9 @@ def usage_line(usage: dict) -> str:
     text = f"{prompt:,} in / {completion:,} out / {usage.get('total_tokens', 0):,} total"
     if cached:
         text += f" ({cached:,} cached)"
+    reasoning = _reasoning_tokens(usage)
+    if reasoning:
+        text += f" ({reasoning:,} of the output was reasoning)"
     return text
 
 
@@ -346,6 +432,7 @@ def run_totals(results: list[ArticleResult]) -> dict:
     for result in results:
         for key in totals:
             totals[key] += int(result.usage.get(key, 0) or 0)
+    totals["reasoning_tokens"] = sum(_reasoning_tokens(r.usage) for r in results)
     return totals
 
 
@@ -383,6 +470,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="skip the compound-dictionary hard constraint")
     parser.add_argument("--refresh", action="store_true",
                         help="re-generate (article, level) pairs that already exist")
+    parser.add_argument("--refresh-outdated", action="store_true",
+                        help="re-generate only the pairs whose stored prompt version "
+                             "is older than the current one (cheaper than --refresh)")
+    parser.add_argument("--refetch-body", action="store_true",
+                        help="re-scrape article pages for articles already stored "
+                             "(after an extraction fix) instead of reusing the body")
     parser.add_argument("--allow-peak", action="store_true",
                         help="run even during DeepSeek's peak hours (costs double)")
     parser.add_argument("--list", action="store_true", help="list stored articles and exit")
@@ -444,10 +537,13 @@ def main(argv: list[str] | None = None) -> int:
         articles=articles,
         limit=args.limit,
         refresh=args.refresh,
+        refetch_body=args.refetch_body,
+        refresh_outdated=args.refresh_outdated,
     )
+    skipped = sum(1 for r in stats.results if r.status == "skipped")
     print(
         f"\n{stats.ingested} ingested, {stats.duplicates} duplicates, "
-        f"{stats.failed} failed"
+        f"{skipped} too short, {stats.failed} failed"
     )
     spent = usage_line(run_totals(stats.results))
     if spent:

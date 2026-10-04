@@ -76,6 +76,7 @@
   .pre .row{padding:.4rem 0;border-top:1px solid var(--line)}
   .pre .term{font-weight:600}
   .pre .gloss{color:var(--dim);font-size:.86rem;line-height:1.5;margin-top:.15rem}
+  .pre .gloss.vi{font-style:italic}
   .pre .eg{color:var(--dim);font-size:.8rem;font-style:italic;margin-top:.2rem}
   .pre .lv{font-size:.7rem;color:var(--accent);border:1px solid var(--line);
     border-radius:1rem;padding:0 .35rem;margin-left:.35rem}
@@ -91,6 +92,13 @@
   #sheet .form{font-size:1.3rem;font-weight:700}
   #sheet .meta{color:var(--dim);font-size:.75rem}
   #sheet .def{margin:.5rem 0 .1rem;line-height:1.55}
+  /* The English meaning from the local dictionary leads; the Vietnamese gloss
+     from the model sits underneath, visually subordinate to it. */
+  #sheet .def .en{font-size:1.08rem;font-weight:600}
+  #sheet .def .alt{color:var(--dim);font-size:.86rem;margin-top:.15rem}
+  #sheet .def .vi{color:var(--dim);font-size:.9rem;margin-top:.4rem;
+    padding-top:.4rem;border-top:1px solid var(--line)}
+  #sheet .def .none{color:var(--dim)}
   #sheet .cand{margin-top:.5rem;font-size:.8rem;color:var(--dim)}
   #sheet .acts{display:flex;gap:.4rem;margin-top:.75rem;flex-wrap:wrap}
   #sheet .acts button{padding:.35rem .5rem;font-size:.82rem}

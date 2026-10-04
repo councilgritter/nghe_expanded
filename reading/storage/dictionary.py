@@ -1,12 +1,22 @@
-"""The local compound dictionary — the hard constraint on segmentation.
+"""The local compound dictionary — boundaries *and* English glosses.
 
-Built by ``tools/build_dictionary.py`` from the word lists bundled with
-underthesea (``Viet11K`` / ``Viet22K`` / ``Viet39K`` / ``Viet74K``).  Those lists
-are *boundary* data: they say which syllable runs form one word, and they carry no
-glosses.  So this dictionary decides compounds, and definitions come from DeepSeek.
+Two layers live in one SQLite file, built by two tools:
 
-The reconciler treats a dictionary hit as authoritative: if the dictionary knows
-``đại_học``, no amount of model disagreement will split it.
+``entries``
+    Compound boundaries, from the word lists bundled with underthesea
+    (``Viet11K`` / ``Viet22K`` / ``Viet39K`` / ``Viet74K``), built by
+    ``tools/build_dictionary.py``.  These lists carry no glosses.
+
+``glosses``
+    English (Việt→Anh) definitions, imported from the Wiktionary-derived
+    machine-readable Vietnamese dictionary by ``tools/build_glosses.py``.  They are
+    keyed by the same normalised form but are deliberately *not* restricted to the
+    ``entries`` headwords, so a word the segmenter knows can still be glossed even
+    when the boundary lists do not contain it.
+
+The reconciler treats a boundary hit as authoritative: if the dictionary knows
+``đại_học``, no amount of model disagreement will split it.  Glosses play no part
+in segmentation; they are looked up per token when the token map is built.
 """
 from __future__ import annotations
 
@@ -35,6 +45,26 @@ def normalize_form(form: str) -> str:
     return UNDERSCORE.join(p for p in (normalize_syllable(x) for x in parts) if p)
 
 
+def _load_glosses(conn: sqlite3.Connection) -> dict[str, tuple[str, ...]]:
+    """English senses per headword, in the stored display order.
+
+    A dictionary built before the gloss layer existed has no ``glosses`` table at
+    all, which is not an error: it simply has no definitions to offer.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT headword, gloss FROM glosses ORDER BY headword, rank"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    grouped: dict[str, list[str]] = {}
+    for row in rows:
+        gloss = row["gloss"]
+        if gloss:
+            grouped.setdefault(row["headword"], []).append(gloss)
+    return {headword: tuple(senses) for headword, senses in grouped.items()}
+
+
 @dataclass(frozen=True)
 class DictEntry:
     headword: str          # underscore form, normalised
@@ -54,9 +84,17 @@ class CompoundDictionary:
     querying SQLite per syllable.
     """
 
-    def __init__(self, entries: dict[str, DictEntry], max_syllables: int = MAX_COMPOUND_SYLLABLES):
+    def __init__(
+        self,
+        entries: dict[str, DictEntry],
+        max_syllables: int = MAX_COMPOUND_SYLLABLES,
+        glosses: dict[str, tuple[str, ...]] | None = None,
+    ):
         self._entries = entries
         self.max_syllables = max_syllables
+        # English glosses, keyed by normalised form.  Independent of ``entries``:
+        # a word can be glossed without being a boundary headword.
+        self._glosses = glosses or {}
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -67,9 +105,28 @@ class CompoundDictionary:
     def get(self, form: str) -> DictEntry | None:
         return self._entries.get(normalize_form(form))
 
+    # -- English glosses ----------------------------------------------------
+
+    def glosses(self, form: str) -> tuple[str, ...]:
+        """English senses for ``form``, most likely first.  Empty when unknown."""
+        return self._glosses.get(normalize_form(form), ())
+
+    def primary_gloss(self, form: str) -> str | None:
+        """The single English sense to show for a tap, or ``None``."""
+        found = self.glosses(form)
+        return found[0] if found else None
+
+    @property
+    def gloss_count(self) -> int:
+        """How many forms carry at least one English gloss."""
+        return len(self._glosses)
+
     @classmethod
     def from_sqlite(
-        cls, path: Path | str, max_syllables: int = MAX_COMPOUND_SYLLABLES
+        cls,
+        path: Path | str,
+        max_syllables: int = MAX_COMPOUND_SYLLABLES,
+        load_glosses: bool = True,
     ) -> "CompoundDictionary":
         path = Path(path)
         if not path.is_file():
@@ -86,6 +143,7 @@ class CompoundDictionary:
                      FROM entries WHERE syllable_count <= ?""",
                 (max_syllables,),
             ).fetchall()
+            glosses = _load_glosses(conn) if load_glosses else {}
         finally:
             conn.close()
         entries = {
@@ -99,7 +157,7 @@ class CompoundDictionary:
             )
             for row in rows
         }
-        return cls(entries, max_syllables=max_syllables)
+        return cls(entries, max_syllables=max_syllables, glosses=glosses)
 
     # -- the constraint the reconciler uses ---------------------------------
 

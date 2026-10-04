@@ -18,6 +18,7 @@ mis-aligned.
 """
 from __future__ import annotations
 
+import difflib
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -26,6 +27,9 @@ from typing import Iterable, Sequence
 UNDERSCORE = "_"
 _WS_RE = re.compile(r"\s+")
 _WORD_RE = re.compile(r"\w+", re.UNICODE)
+# A blank line: the only whitespace run that carries meaning.  "\n\n", "\r\n\r\n",
+# "  \n \n  " and a run of three newlines are all one paragraph break.
+_PARA_RE = re.compile(r"(?:\r?\n)[ \t]*(?:(?:\r?\n)[ \t]*)+")
 
 
 class GroupingError(ValueError):
@@ -43,7 +47,28 @@ def nfc(text: str) -> str:
 
 
 def squeeze_whitespace(text: str) -> str:
+    """Collapse every whitespace run to one space.  For single-line prose only."""
     return _WS_RE.sub(" ", text).strip()
+
+
+def squeeze_whitespace_preserving_paragraphs(text: str) -> str:
+    """Collapse whitespace *within* paragraphs, keeping blank lines between them.
+
+    :func:`squeeze_whitespace` treats a paragraph break as just more whitespace, so
+    applying it to the model's article silently runs every paragraph together and
+    the reader — which rebuilds paragraphs from blank lines — renders an 8,000
+    character article as one wall of text.  Newlines are the one kind of whitespace
+    here that carries meaning, so they survive; spaces, tabs and runs of three
+    newlines do not.
+
+    The syllable sequence is unaffected, so token offsets and grouping counts stay
+    valid across this transform.
+    """
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    paragraphs = (
+        squeeze_whitespace(part) for part in _PARA_RE.split(normalized)
+    )
+    return "\n\n".join(part for part in paragraphs if part)
 
 
 @dataclass(frozen=True)
@@ -80,19 +105,50 @@ def words_in_chunk(chunk: str) -> int:
     return len(_WORD_RE.findall(chunk.replace(UNDERSCORE, " ")))
 
 
+def word_change_ratio(original: str, rewritten: str) -> float:
+    """Share of the source's words that the rewrite replaced, added or dropped.
+
+    Zero means the "simplification" returned the article unchanged apart from
+    underscores — which is exactly the failure this pipeline had, and which nothing
+    downstream could see: the bundle looked perfect, the token map was sound, and an
+    A2 article was in fact unmodified B2 prose.  Measuring it at ingest is the only
+    cheap way to notice.
+
+    Compared on whitespace-separated words, so reordering counts as change (as it
+    should — a reordered sentence is a rewritten one).
+    """
+    before = squeeze_whitespace(original.replace(UNDERSCORE, " ")).split()
+    after = squeeze_whitespace(rewritten.replace(UNDERSCORE, " ")).split()
+    if not before:
+        return 0.0
+    matcher = difflib.SequenceMatcher(None, before, after, autojunk=False)
+    changed = sum(
+        max(i2 - i1, j2 - j1)
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes()
+        if tag != "equal"
+    )
+    return changed / len(before)
+
+
 def grouping_from_underscores(segmented_text: str) -> tuple[str, list[int]]:
     """Split LLM underscore output into (plain text, group sizes).
 
     The plain text is what gets stored and rendered; the group sizes are the LLM's
     claim about which syllables form one word.
+
+    Paragraph breaks are preserved: they are the only structure the reader uses to
+    rebuild the article's shape from the stored string.
     """
-    squeezed = squeeze_whitespace(nfc(segmented_text))
+    squeezed = squeeze_whitespace_preserving_paragraphs(nfc(segmented_text))
     # Underscores become spaces, then whitespace is squeezed again: an underscore
     # next to a space would otherwise leave a double space in the stored text.
     # This cannot change the syllable sequence, so the counts still hold.
-    plain = squeeze_whitespace(squeezed.replace(UNDERSCORE, " "))
+    plain = squeeze_whitespace_preserving_paragraphs(squeezed.replace(UNDERSCORE, " "))
+    # Split on *any* whitespace run, so a paragraph break separates chunks too.  A
+    # chunk must never straddle a newline: words_in_chunk would then count two
+    # separate words as one multi-syllable group.
     counts = [
-        n for n in (words_in_chunk(chunk) for chunk in squeezed.split(" ")) if n
+        n for n in (words_in_chunk(chunk) for chunk in _WS_RE.split(squeezed)) if n
     ]
     return plain, counts
 

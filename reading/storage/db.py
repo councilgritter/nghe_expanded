@@ -109,6 +109,24 @@ def version_exists(
     return row is not None
 
 
+def version_prompt_version(
+    conn: sqlite3.Connection, source: str, guid: str, cefr_level: str
+) -> str | None:
+    """Which prompt produced the stored version, or ``None`` if there is none.
+
+    Lets a refresh target only the versions a prompt change has made stale, instead
+    of re-paying for every pair that was already generated with the current prompt.
+    """
+    row = conn.execute(
+        """SELECT v.prompt_version FROM article_versions v
+             JOIN articles a ON a.id = v.article_id
+            WHERE a.source = ? AND a.guid = ? AND v.cefr_level = ?
+            LIMIT 1""",
+        (source, guid, cefr_level.upper()),
+    ).fetchone()
+    return row["prompt_version"] if row is not None else None
+
+
 def insert_article(conn: sqlite3.Connection, article: ArticleRecord) -> int | None:
     """Insert an article, or return ``None`` if it was already present."""
     if article_exists(conn, article.source, article.guid):
@@ -137,6 +155,26 @@ def insert_article(conn: sqlite3.Connection, article: ArticleRecord) -> int | No
 
 def get_article(conn: sqlite3.Connection, article_id: int) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM articles WHERE id = ?", (article_id,)).fetchone()
+
+
+def update_article_body(
+    conn: sqlite3.Connection,
+    article_id: int,
+    original_text: str,
+    body_source: str,
+) -> None:
+    """Replace an article's stored body.
+
+    Used by ``ingest --refetch-body``: the body is normally immutable, but the
+    extractor itself can be wrong (it once kept a single paragraph of a BBC page),
+    and when that happens the stored text has to be replaceable or the fix cannot
+    reach articles already in the database.
+    """
+    conn.execute(
+        "UPDATE articles SET original_text = ?, body_source = ?, fetched_at = ? WHERE id = ?",
+        (original_text, body_source, now_iso(), article_id),
+    )
+    conn.commit()
 
 
 def list_articles(
@@ -234,6 +272,9 @@ def replace_tokens(conn: sqlite3.Connection, version_id: int, tokens: Sequence[d
             t.get("cefr_level"),
             t.get("definition"),
             t.get("definition_src", "none"),
+            t.get("definition_en"),
+            t.get("definition_vi"),
+            json.dumps(t["senses_en"], ensure_ascii=False) if t.get("senses_en") else None,
             1 if t.get("ambiguous") else 0,
             json.dumps(t["candidates"], ensure_ascii=False) if t.get("candidates") else None,
         )
@@ -242,9 +283,9 @@ def replace_tokens(conn: sqlite3.Connection, version_id: int, tokens: Sequence[d
     conn.executemany(
         """INSERT INTO tokens
              (version_id, ordinal, surface, form, start_char, end_char,
-              syllable_count, cefr_level, definition, definition_src, ambiguous,
-              candidates)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+              syllable_count, cefr_level, definition, definition_src,
+              definition_en, definition_vi, senses_en, ambiguous, candidates)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         rows,
     )
     conn.commit()
@@ -259,6 +300,7 @@ def replace_preteach(conn: sqlite3.Connection, version_id: int, items: Iterable[
             item["kind"],
             item["term"],
             item.get("gloss", ""),
+            item.get("gloss_en"),
             item.get("cefr_level"),
             item.get("example"),
             item.get("ordinal", 0),
@@ -267,8 +309,8 @@ def replace_preteach(conn: sqlite3.Connection, version_id: int, items: Iterable[
     ]
     conn.executemany(
         """INSERT OR REPLACE INTO preteach
-             (version_id, kind, term, gloss, cefr_level, example, ordinal)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+             (version_id, kind, term, gloss, gloss_en, cefr_level, example, ordinal)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         rows,
     )
     conn.commit()

@@ -196,8 +196,10 @@ The settings panel (gear icon) controls:
 ## Reading practice
 
 `reading/` adds a second drill: read real Vietnamese news, simplified to a CEFR level
-you pick, with every word tappable. Long-press a word and its meaning comes up from
-data already on the device — no request, no waiting.
+you pick, with every word tappable. Tap a word and its meaning comes up from data
+already on the device — no request, no waiting. The meaning shown is **English**, from
+a bundled Việt→Anh dictionary (Wiktionary-derived, CC BY-SA 4.0); the model's
+Vietnamese gloss sits underneath it.
 
 Articles come from **VOA Tiếng Việt** and **BBC News Tiếng Việt**. Each is rewritten by
 DeepSeek at the target level, then split into words by a reconciler that treats a local
@@ -205,11 +207,15 @@ Vietnamese compound dictionary as authoritative: where the dictionary knows a wo
 wins; where the model and `underthesea` disagree, both readings are kept and the word is
 flagged so the reader can widen or narrow it.
 
+Nothing here runs on a schedule — ingest, gloss import and export are commands you type,
+so opening the app never spends a token.
+
 It follows the same shape as the drill above — an offline Python pipeline and a static
 page, no server — so it needs no new infrastructure:
 
 ```
-python -m reading.tools.build_dictionary        # once
+python -m reading.tools.build_dictionary        # once: compound boundaries
+python -m reading.tools.build_glosses           # once: English glosses (~80 MB download)
 python -m reading.pipeline.ingest --cefr B1 --limit 5
 python -m reading.tools.build_site
 python -m http.server 8000                      # from the repo root, open /index.html
@@ -222,7 +228,16 @@ this same flow rather than a separate mode.)
 
 It needs a `DEEPSEEK_API_KEY` for ingest (`reading/.env`), and nothing else. Both news
 sources require attribution, which is stored with each article and always shown in the
-reader. Pipeline, env vars and cost details: `reading/README.md`; design and diagrams:
+reader; the English glosses carry their own CC BY-SA notice.
+
+**One thing worth knowing if you change the model:** the simplification depends on the
+model *reasoning*. `deepseek-flash` thinks before it answers and genuinely rewrites
+(15–21% of words change per article); with reasoning disabled, or with the retired
+`deepseek-chat` alias, it returns the source verbatim and the CEFR level does nothing.
+The pipeline now measures and prints how much each rewrite changed, so that failure is
+visible rather than silent. Details in `reading/README.md`.
+
+Pipeline, env vars and cost details: `reading/README.md`; design and diagrams:
 `reading/ARCHITECTURE.md`.
 
 ## Changing what gets drilled

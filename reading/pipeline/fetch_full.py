@@ -37,6 +37,17 @@ STRIP_SELECTORS = (
 # Don't bother with pages that yielded almost nothing.
 MIN_BODY_CHARS = 240
 
+# A paragraph shorter than this is a caption, a byline or a teaser, not prose.
+MIN_PARAGRAPH_CHARS = 40
+
+# A paragraph whose text is mostly anchor text is navigation or a related-links
+# block rather than article prose.
+MAX_LINK_DENSITY = 0.5
+
+# The chosen container must hold at least this share of the page's qualifying
+# prose, so a container that captured only part of the article is not accepted.
+CONTAINER_COVERAGE = 0.95
+
 
 @dataclass(frozen=True)
 class FullText:
@@ -45,8 +56,46 @@ class FullText:
     reason: str = ""
 
 
+def _link_density(node) -> float:
+    """Share of a paragraph's text that sits inside anchors (1.0 = all of it)."""
+    text = node.get_text(" ", strip=True)
+    if not text:
+        return 1.0
+    linked = sum(len(a.get_text(" ", strip=True)) for a in node.find_all("a"))
+    return min(1.0, linked / len(text))
+
+
+def _depth(node) -> int:
+    """How many ancestors a node has — used to prefer the tightest container."""
+    depth = 0
+    for _ in node.parents:
+        depth += 1
+    return depth
+
+
+def _qualifying_paragraphs(soup) -> list:
+    """Paragraphs that look like article prose, in document order."""
+    out = []
+    for node in soup.find_all("p"):
+        if len(node.get_text(" ", strip=True)) < MIN_PARAGRAPH_CHARS:
+            continue
+        if _link_density(node) > MAX_LINK_DENSITY:
+            continue
+        out.append(node)
+    return out
+
+
 def extract_body(html: str) -> str:
-    """Pull the main prose out of an article page.  Pure, so it is testable offline."""
+    """Pull the main prose out of an article page.  Pure, so it is testable offline.
+
+    Scoring *ancestors* rather than immediate parents is the whole point.  Many
+    news sites (BBC among them) wrap every paragraph in its own ``<div>``, so each
+    immediate parent holds exactly one paragraph and a max() over them returns
+    whichever came first in the document — a single paragraph, silently presented
+    as the article.  Scoring every ancestor and then keeping the deepest one that
+    still holds essentially all of the page's prose finds the real body container
+    without also reaching for ``<body>`` and its furniture.
+    """
     from bs4 import BeautifulSoup
 
     soup = BeautifulSoup(html, "lxml")
@@ -54,35 +103,42 @@ def extract_body(html: str) -> str:
         for node in soup.find_all(selector):
             node.decompose()
 
-    # Score every paragraph, then let each candidate container inherit its children.
-    paragraphs = []
-    for node in soup.find_all("p"):
-        text = node.get_text(" ", strip=True)
-        if len(text) >= 40:
-            paragraphs.append((node, text))
+    paragraphs = _qualifying_paragraphs(soup)
     if not paragraphs:
         return ""
 
+    lengths = {id(node): len(node.get_text(" ", strip=True)) for node in paragraphs}
+    total = sum(lengths.values())
+
     scores: dict[int, int] = {}
     owners: dict[int, object] = {}
-    for node, text in paragraphs:
-        parent = node.parent
-        if parent is None:
-            continue
-        key = id(parent)
-        scores[key] = scores.get(key, 0) + len(text)
-        owners[key] = parent
+    for node in paragraphs:
+        for ancestor in node.parents:
+            key = id(ancestor)
+            scores[key] = scores.get(key, 0) + lengths[id(node)]
+            owners[key] = ancestor
 
     if not scores:
         return ""
-    best_key = max(scores, key=lambda k: scores[k])
-    container = owners[best_key]
 
+    # Deepest container still covering ~all of the prose: the article body, not
+    # <body> (which drags in furniture) and not a per-paragraph wrapper.
+    threshold = total * CONTAINER_COVERAGE
+    candidates = [key for key, score in scores.items() if score >= threshold]
+    container = owners[max(candidates, key=lambda key: _depth(owners[key]))]
+
+    wanted = {id(node) for node in paragraphs}
     chunks: list[str] = []
     for node in container.find_all("p"):
+        if id(node) not in wanted:
+            continue
         text = node.get_text(" ", strip=True)
         if text:
             chunks.append(text)
+    if not chunks:
+        # The container narrowed past the prose (a malformed tree, say); the
+        # qualifying paragraphs are still the best answer available.
+        chunks = [node.get_text(" ", strip=True) for node in paragraphs]
     return "\n\n".join(chunks).strip()
 
 

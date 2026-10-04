@@ -138,8 +138,11 @@ function renderReader(){
   // The attribution notice travels with the article; both sources require it.
   $('foot').innerHTML = esc(b.article.attribution) +
     (b.version.quality !== 'ok'
-      ? '<br><span style="color:var(--warn)">Bài này được chia từ theo underthesea vì ' +
-        'mô hình đã đổi thứ tự âm tiết; hãy kiểm tra lại cách chia từ.</span>'
+      ? '<br><span style="color:var(--warn)">Cách chia từ của bài này chưa chắc chắn — ' +
+        'hãy kiểm tra lại, và nhấn giữ một từ để xem cách chia khác.</span>' +
+        (b.version.notes
+          ? '<br><span style="color:var(--dim)">' + esc(b.version.notes) + '</span>'
+          : '')
       : '');
 }
 
@@ -152,7 +155,8 @@ function renderPreteach(b){
   const block = (label, rows) => rows.length ? '<h4>' + label + '</h4>' + rows.map(r =>
       '<div class="row"><div class="term">' + esc(r.term.replace(/_/g,' ')) +
       (r.cefr ? '<span class="lv">' + esc(r.cefr) + '</span>' : '') + '</div>' +
-      (r.gloss ? '<div class="gloss">' + esc(r.gloss) + '</div>' : '') +
+      (r.gloss_en ? '<div class="gloss">' + esc(r.gloss_en) + '</div>' : '') +
+      (r.gloss ? '<div class="gloss vi">' + esc(r.gloss) + '</div>' : '') +
       (r.example ? '<div class="eg">' + esc(r.example) + '</div>' : '') +
       '</div>').join('') : '';
   $('preIn').innerHTML = block('Từ vựng', v) + block('Ngữ pháp', g);
@@ -249,6 +253,32 @@ function selectionText(){
   return {start: a, end: b, surface: S.bundle.text.slice(a, b)};
 }
 
+/* The definition area: English meaning first, the Vietnamese gloss underneath.
+   Both come from the bundle — the English from the local Việt→Anh dictionary, the
+   Vietnamese from the model's pre-teach list — so this costs nothing at tap time. */
+function paintDefinition(exact, fallbackText){
+  const en = exact && exact.definition_en;
+  const vi = exact && exact.definition_vi;
+  const senses = (exact && exact.senses_en) || [];
+  const primary = exact && exact.definition;
+
+  const parts = [];
+  if (en){
+    parts.push('<div class="en">' + esc(en) + '</div>');
+    if (senses.length)
+      parts.push('<div class="alt">' + senses.map(esc).join(' · ') + '</div>');
+    if (vi) parts.push('<div class="vi">' + esc(vi) + '</div>');
+  } else if (vi){
+    parts.push('<div class="en">' + esc(vi) + '</div>');
+  } else if (primary){
+    // An older bundle, or a cached fallback answer, carries one string only.
+    parts.push('<div class="en">' + esc(primary) + '</div>');
+  } else {
+    parts.push('<div class="none">' + esc(fallbackText || '') + '</div>');
+  }
+  $('shDef').innerHTML = parts.join('');
+}
+
 function showSelection(){
   const {start, end, surface} = selectionText();
   const exact = tokenBySyllables(S.sel.sylStart, S.sel.sylEnd);
@@ -264,8 +294,8 @@ function showSelection(){
   $('shActs').innerHTML = '';
 
   // 1. An exact token with a definition — no network, ever.
-  if (exact && exact.definition){
-    $('shDef').textContent = exact.definition;
+  if (exact && (exact.definition_en || exact.definition_vi || exact.definition)){
+    paintDefinition(exact);
     showCandidates(exact);
     addHandleButtons();
     openSheet();
@@ -279,7 +309,7 @@ function showSelection(){
   const key = hash(sentence + '\u001f' + surface);
   const hit = cacheGet(key);
   if (hit){
-    $('shDef').textContent = hit.definition || '';
+    paintDefinition(null, hit.definition || '');
     $('shMeta').textContent += ' · đã lưu';
     showCandidates(exact);
     addHandleButtons();
@@ -287,11 +317,12 @@ function showSelection(){
     return;
   }
 
-  if (exact || inside.length){
-    $('shDef').textContent = 'Chưa có nghĩa cho từ này.';
-  } else {
-    $('shDef').textContent = 'Chỗ này không nằm trong từ nào đã chia.';
-  }
+  paintDefinition(
+    null,
+    (exact || inside.length)
+      ? 'Chưa có nghĩa cho từ này.'
+      : 'Chỗ này không nằm trong từ nào đã chia.'
+  );
   showCandidates(exact);
   addHandleButtons();
 
@@ -342,7 +373,7 @@ async function askDisambiguation(sentence, selection, key){
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
-    $('shDef').textContent = d.definition || 'Không tìm thấy nghĩa phù hợp.';
+    paintDefinition(null, d.definition || 'Không tìm thấy nghĩa phù hợp.');
     if (d.form) $('shForm').textContent = d.form.replace(/_/g, ' ');
     if (d.cefr) $('shMeta').textContent += ' · ' + d.cefr;
     cacheSet(key, {definition: d.definition || '', form: d.form || '', cefr: d.cefr || ''});

@@ -17,7 +17,9 @@ from reading.pipeline.text import (
     slice_text,
     spans_to_counts,
     squeeze_whitespace,
+    squeeze_whitespace_preserving_paragraphs,
     syllables_with_offsets,
+    word_change_ratio,
     words_in_chunk,
 )
 
@@ -90,6 +92,78 @@ class TestGroupingFromUnderscores:
         assert sum(counts) == len(syllables_with_offsets(plain))
 
 
+class TestParagraphPreservation:
+    """Blank lines are the only whitespace that carries meaning.
+
+    The reader rebuilds the article's paragraph shape from ``\\n\\n`` in the stored
+    text.  Squeezing those to spaces rendered an 8,000-character article as a single
+    wall of text, with no other symptom.
+    """
+
+    def test_a_blank_line_survives(self):
+        plain, _ = grouping_from_underscores("Đoạn một.\n\nĐoạn hai.")
+        assert plain == "Đoạn một.\n\nĐoạn hai."
+
+    def test_whitespace_within_a_paragraph_is_still_collapsed(self):
+        plain, _ = grouping_from_underscores("Đoạn   một.\n\nĐoạn \t hai.")
+        assert plain == "Đoạn một.\n\nĐoạn hai."
+
+    def test_bare_newlines_and_windows_line_endings_are_paragraph_breaks(self):
+        assert "\n\n" in grouping_from_underscores("a\r\n\r\nb")[0]
+        assert "\n\n" in grouping_from_underscores("a\n\n\n\nb")[0]
+
+    def test_leading_and_trailing_blank_lines_are_trimmed(self):
+        plain, _ = grouping_from_underscores("\n\n  Đoạn một.  \n\n")
+        assert plain == "Đoạn một."
+
+    def test_paragraph_breaks_survive_underscore_expansion(self):
+        plain, _ = grouping_from_underscores("Chúng_tôi đi học.\n\nHôm_nay trời đẹp.")
+        assert plain == "Chúng tôi đi học.\n\nHôm nay trời đẹp."
+
+    def test_counts_still_cover_the_text_across_a_paragraph_break(self):
+        plain, counts = grouping_from_underscores("Chúng_tôi đi.\n\nHôm_nay trời đẹp.")
+        assert sum(counts) == len(syllables_with_offsets(plain))
+        # The last word of one paragraph must not merge with the first of the next.
+        assert counts == [2, 1, 2, 1, 1]
+
+    def test_a_newline_never_joins_two_words_into_one_group(self):
+        _, counts = grouping_from_underscores("một\nhai")
+        assert counts == [1, 1]
+
+
+class TestWordChangeRatio:
+    """The guard against a "simplification" that transcribed the source.
+
+    Nothing downstream could see it: the bundle, token map and segmentation were all
+    correct, and an A2 article was really unmodified B2 prose.
+    """
+
+    def test_an_identical_text_scores_zero(self):
+        text = "Chúng tôi đi học ở trường đại học quốc gia."
+        assert word_change_ratio(text, text) == 0.0
+
+    def test_underscores_alone_do_not_count_as_change(self):
+        original = "Chúng tôi đi học."
+        segmented = "Chúng_tôi đi học."
+        assert word_change_ratio(original, segmented) == 0.0
+
+    def test_reordering_counts_as_change(self):
+        assert word_change_ratio("một hai ba bốn", "bốn ba hai một") > 0.5
+
+    def test_a_fully_rewritten_text_scores_high(self):
+        assert word_change_ratio("một hai ba bốn", "năm sáu bảy tám") == 1.0
+
+    def test_a_partial_rewrite_lands_in_between(self):
+        ratio = word_change_ratio("một hai ba bốn", "một hai ba chín")
+        assert 0.0 < ratio <= 0.5
+
+    def test_dropped_words_count_as_change(self):
+        assert word_change_ratio("một hai ba bốn", "một hai") > 0.0
+
+    def test_empty_source_is_not_a_division_error(self):
+        assert word_change_ratio("", "bất kỳ") == 0.0
+
+
 class TestGroupingArithmetic:
     def test_counts_and_spans_round_trip(self):
         counts = [2, 1, 3, 1]
@@ -119,6 +193,10 @@ class TestCheckGrouping:
 class TestHelpers:
     def test_squeeze_whitespace_collapses_and_trims(self):
         assert squeeze_whitespace("  a \n b\t c  ") == "a b c"
+
+    def test_paragraph_preserving_squeeze_keeps_the_blank_line(self):
+        squeezed = squeeze_whitespace_preserving_paragraphs("  a \n b \n\n c \t d  ")
+        assert squeezed == "a b\n\nc d"
 
     def test_words_in_chunk_treats_underscore_as_separator(self):
         assert words_in_chunk("chúng_tôi,") == 2

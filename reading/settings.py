@@ -89,11 +89,22 @@ class Settings:
     # alias; `deepseek-flash` is what the docs name now, and `deepseek-v4-pro`
     # costs roughly 4x for work this pipeline does not need.
     # https://api-docs.deepseek.com/quick_start/pricing/
+    #
+    # This choice is behavioural, not just a price.  `deepseek-flash` reasons before
+    # answering, and that reasoning is what makes it actually rewrite: with reasoning
+    # disabled it returns the source article verbatim (0% of words changed), which is
+    # exactly what the retired `deepseek-chat` alias did.  Do not "optimise" this by
+    # turning thinking off — see `prompts.SIMPLIFY_SYSTEM_PROMPT` and the known limits
+    # in README.md.
     deepseek_model: str = field(
         default_factory=lambda: os.environ.get("DEEPSEEK_MODEL", "deepseek-flash")
     )
+    # Generous, because the reasoning above is billed as completion tokens: a full
+    # 8,000-character article can need tens of thousands of them, and the request is
+    # not streamed, so nothing arrives until the whole answer is ready.  A 120 s read
+    # timeout drops the connection mid-generation on exactly the longest articles.
     deepseek_timeout_s: float = field(
-        default_factory=lambda: float(os.environ.get("DEEPSEEK_TIMEOUT_S", "120"))
+        default_factory=lambda: float(os.environ.get("DEEPSEEK_TIMEOUT_S", "600"))
     )
     # Retries for transient 429/5xx.  Kept low: ingest is batch, not interactive.
     deepseek_max_retries: int = field(
@@ -132,6 +143,15 @@ class Settings:
     # Politeness delay between article fetches, seconds.
     fetch_delay_s: float = field(
         default_factory=lambda: float(os.environ.get("READING_FETCH_DELAY_S", "1.0"))
+    )
+    # Shortest body worth turning into a reading exercise.  VOA in particular mixes
+    # full text articles with video pieces whose page carries only a two-sentence
+    # lede; those make useless drills (and would still cost a simplification call),
+    # so an item below this length is skipped rather than ingested.  RSS summaries
+    # are usually shorter than this, which is deliberate: if full-text extraction
+    # fails, skipping is better than publishing a 200-character "article".
+    min_body_chars: int = field(
+        default_factory=lambda: int(os.environ.get("READING_MIN_BODY_CHARS", "400"))
     )
 
     # --- segmentation ------------------------------------------------------

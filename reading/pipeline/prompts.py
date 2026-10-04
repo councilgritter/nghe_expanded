@@ -9,7 +9,7 @@ every generated row so a prompt change is visible in the data.
 """
 from __future__ import annotations
 
-PROMPT_VERSION = "reading-v1"
+PROMPT_VERSION = "reading-v3"
 
 CEFR_LEVELS = ("A1", "A2", "B1", "B2", "C1", "C2")
 
@@ -26,31 +26,43 @@ fences.
 
 ## The simplified text
 
-1. Rewrite the article in Vietnamese at the target CEFR level given in the user message.
+1. Rewrite the article in Vietnamese at the target CEFR level given in the user message. \
+This is a real rewrite, not a transcription. The learner at that level has to be able to \
+follow it, which means sentence length, clause structure, word order and vocabulary are \
+all yours to change. Two different target levels must produce visibly different text.
    - A1/A2: short sentences, one clause each, high-frequency vocabulary, active voice, \
 concrete wording. Split long sentences; keep paragraphs short.
    - B1/B2: moderate sentences, some subordination, less common vocabulary explained \
 in-line only when unavoidable.
    - C1/C2: stay close to the original register and structure; simplify only where the \
 original is genuinely opaque.
-2. Preserve meaning and factual content exactly. Keep every name, number, date, place, \
-unit and quotation as it appears. Never add facts, never drop facts, never editorialise, \
-never resolve an ambiguity the original left open.
+2. Preserve the *meaning* exactly; the *wording* is yours to change. What has to survive \
+is what the text says and every fact it states: keep every name, number, date, place, \
+unit and quotation as given. Never add a fact, never drop a fact, never editorialise, \
+never resolve an ambiguity the original left open. Reordering words, rephrasing a \
+sentence, splitting or merging sentences and swapping in a simpler word are all expected \
+and correct, as long as the result still says the same thing.
 3. Keep the original paragraph structure. Separate paragraphs with a single blank line.
 4. Do not translate. The output is Vietnamese, in Vietnamese script.
 5. Do not add headings, titles, summaries, notes or explanations. Output only the \
 rewritten article body.
 
+Returning the source article with only underscores added is a failure of this task. If \
+your simplified text is word-for-word the input, you have not done your job.
+
 ## Word segmentation
 
-6. Join the syllables of every multi-syllable Vietnamese word with underscores, so \
-`đại học` is written `đại_học` and `thành phố Hồ Chí Minh` is written \
-`thành_phố Hồ_Chí_Minh`. Single-syllable words get no underscore.
+6. `segmented_text` is the text from step 1 with one marking applied: join the syllables \
+of every multi-syllable Vietnamese word with underscores, so `đại học` is written \
+`đại_học` and `thành phố Hồ Chí Minh` is written `thành_phố Hồ_Chí_Minh`. \
+Single-syllable words get no underscore.
 7. Segment every word you would expect a learner's dictionary to list as one entry. \
 Underscores mark word boundaries only — never join two words that are merely adjacent, \
 and never split a word that belongs together.
-8. Punctuation and spacing are otherwise unchanged, and every syllable of the original \
-must still appear exactly once, in order.
+8. Adding the underscores is the only edit made at this stage: apart from them, the string \
+is the rewritten text you already produced, with the same words in the same order. That \
+is a statement about this string's internal consistency — it is *not* a reason to keep \
+the source article's words, which step 1 told you to change.
 
 ## Pre-teach content
 

@@ -12,6 +12,7 @@ import pytest
 from reading.pipeline.reconcile import reconcile
 from reading.pipeline.text import counts_to_spans, syllables_with_offsets
 from reading.pipeline.tokens import (
+    SRC_DICTIONARY,
     SRC_PRET_EACH,
     Definition,
     build_token_map,
@@ -108,6 +109,70 @@ class TestDefinitions:
         _, _, tokens = build()
         assert all(t["definition"] is None for t in tokens)
         assert all(t["definition_src"] == "none" for t in tokens)
+
+
+class TestTwoLanguages:
+    """English from the local dictionary, Vietnamese from the model's pre-teach list.
+
+    Both are free at tap time and they answer different questions, so they are stored
+    in separate columns and the reader shows English first.
+    """
+
+    def test_english_from_the_dictionary_is_the_primary_definition(self):
+        dictionary = make_dictionary(
+            ["đại học"], glosses={"đại học": ("university", "college")}
+        )
+        _, _, tokens = build(dictionary=dictionary)
+        compound = next(t for t in tokens if t["form"] == "đại_học")
+        assert compound["definition_en"] == "university"
+        assert compound["definition"] == "university"
+        assert compound["definition_src"] == SRC_DICTIONARY
+
+    def test_further_senses_are_carried_but_capped(self):
+        dictionary = make_dictionary(
+            ["đại học"], glosses={"đại học": ("a", "b", "c", "d", "e", "f", "g")}
+        )
+        _, _, tokens = build(dictionary=dictionary)
+        compound = next(t for t in tokens if t["form"] == "đại_học")
+        # MAX_EXTRA_SENSES is the cap on the alternatives, not the total.
+        assert compound["senses_en"] == ["b", "c", "d", "e"]
+
+    def test_both_languages_are_kept_when_both_are_known(self):
+        definitions = {"đại_học": Definition(text="trường học bậc cao", cefr="A2")}
+        dictionary = make_dictionary(
+            ["đại học"], glosses={"đại học": ("university",)}
+        )
+        _, _, tokens = build(definitions=definitions, dictionary=dictionary)
+        compound = next(t for t in tokens if t["form"] == "đại_học")
+        assert compound["definition_en"] == "university"
+        assert compound["definition_vi"] == "trường học bậc cao"
+        # English leads; the Vietnamese gloss is still there for nuance.
+        assert compound["definition"] == "university"
+        # The CEFR tag is the model's, since the dictionary has no levels.
+        assert compound["cefr_level"] == "A2"
+
+    def test_vietnamese_is_used_when_the_dictionary_has_no_english(self):
+        definitions = {"đại_học": Definition(text="trường học bậc cao", cefr="A2")}
+        dictionary = make_dictionary(["đại học"])
+        _, _, tokens = build(definitions=definitions, dictionary=dictionary)
+        compound = next(t for t in tokens if t["form"] == "đại_học")
+        assert compound["definition_en"] is None
+        assert compound["definition"] == "trường học bậc cao"
+        assert compound["definition_src"] == SRC_PRET_EACH
+
+    def test_english_alone_is_enough_to_define_a_word(self):
+        """The model pre-teaches a handful of words; the dictionary covers the rest."""
+        dictionary = make_dictionary(
+            ["đại học"], glosses={"đại học": ("university",)}
+        )
+        _, _, tokens = build(dictionary=dictionary)
+        compound = next(t for t in tokens if t["form"] == "đại_học")
+        assert compound["definition"] == "university"
+        assert compound["definition_vi"] is None
+
+    def test_a_word_in_no_dictionary_still_defers_to_the_fallback(self):
+        _, _, tokens = build(dictionary=make_dictionary(["đại học"]))
+        assert all(t["definition"] is None for t in tokens)
 
 
 class TestAmbiguity:

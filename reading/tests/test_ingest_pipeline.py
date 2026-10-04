@@ -17,7 +17,12 @@ from reading.storage import db
 
 
 def run(conn, raw_article, stub_simplifier, test_dictionary, **kwargs):
-    cfg = replace(settings, fetch_full_text=False)
+    # The fixture article is a hand-written 127-character paragraph, so the
+    # "is this long enough to be a reading exercise" gate is switched off here;
+    # the gate itself is covered by TestShortBodyGate.
+    cfg = kwargs.pop(
+        "cfg", replace(settings, fetch_full_text=False, min_body_chars=0)
+    )
     return run_ingest(
         conn,
         cefr_level=kwargs.pop("cefr", "B1"),
@@ -180,7 +185,7 @@ class TestDeduplication:
             cefr_level="B1",
             client=StubSimplifier.from_fixture(fixture_json),
             dictionary=test_dictionary,
-            cfg=replace(settings, fetch_full_text=False),
+            cfg=replace(settings, fetch_full_text=False, min_body_chars=0),
             articles=[raw_article, never_ingested],
             verbose=False,
             refresh=True,
@@ -307,3 +312,171 @@ class TestRuntimeResolution:
         )
         assert resolution.surface  # the chunk under the offset was recovered
         assert resolution.definition
+
+
+class TestRefreshOutdated:
+    """Re-pay only for the pairs a prompt change actually made stale.
+
+    After a run that fails halfway, plain ``--refresh`` re-pays for everything that
+    succeeded; this regenerates only the versions whose stored prompt version is not
+    the current one.
+    """
+
+    def test_nothing_is_regenerated_when_everything_is_current(
+        self, conn, raw_article, stub_simplifier, test_dictionary
+    ):
+        run(conn, raw_article, stub_simplifier, test_dictionary)
+        before = len(stub_simplifier.simplify_calls)
+
+        stats = run(
+            conn, raw_article, stub_simplifier, test_dictionary, refresh_outdated=True
+        )
+
+        assert stats.ingested == 0
+        assert len(stub_simplifier.simplify_calls) == before, "an up-to-date pair was re-paid for"
+
+    def test_a_stale_prompt_version_is_regenerated(
+        self, conn, raw_article, stub_simplifier, test_dictionary
+    ):
+        run(conn, raw_article, stub_simplifier, test_dictionary)
+        # Simulate a version produced by an older prompt.
+        conn.execute("UPDATE article_versions SET prompt_version = 'reading-v0'")
+        conn.commit()
+        before = len(stub_simplifier.simplify_calls)
+
+        stats = run(
+            conn, raw_article, stub_simplifier, test_dictionary, refresh_outdated=True
+        )
+
+        assert stats.ingested == 1
+        assert len(stub_simplifier.simplify_calls) == before + 1
+        version = db.get_version(conn, stats.results[0].article_id, "B1")
+        assert version["prompt_version"] != "reading-v0"
+
+    def test_an_article_that_was_never_ingested_is_left_to_a_normal_run(
+        self, conn, raw_article, stub_simplifier, test_dictionary
+    ):
+        """`outdated` means stale, not new — a normal run picks up new articles."""
+        stats = run(
+            conn, raw_article, stub_simplifier, test_dictionary, refresh_outdated=True
+        )
+        assert stats.ingested == 0
+
+
+class TestShortBodyGate:
+    """A two-sentence lede is not a reading exercise, and must not be paid for.
+
+    VOA mixes full articles with video pieces whose page carries only a lede.  Ingest
+    used to store those as 159-character "articles"; this gate rejects them, and it
+    runs before the simplification call so a stub never costs a token.
+    """
+
+    def test_a_lede_only_item_is_skipped_before_the_paid_call(
+        self, conn, raw_article, stub_simplifier, test_dictionary
+    ):
+        stats = run_ingest(
+            conn,
+            cefr_level="B1",
+            client=stub_simplifier,
+            dictionary=test_dictionary,
+            cfg=replace(settings, fetch_full_text=False, min_body_chars=10_000),
+            articles=[raw_article],
+            verbose=False,
+        )
+        assert stats.ingested == 0
+        result = stats.results[0]
+        assert result.status == "skipped"
+        assert "too short" in result.reason
+        assert stub_simplifier.simplify_calls == [], "a skipped article cost a model call"
+        assert db.list_articles(conn) == [], "a skipped article was stored anyway"
+
+    def test_a_long_enough_body_is_still_ingested(
+        self, conn, raw_article, stub_simplifier, test_dictionary
+    ):
+        stats = run_ingest(
+            conn,
+            cefr_level="B1",
+            client=stub_simplifier,
+            dictionary=test_dictionary,
+            cfg=replace(settings, fetch_full_text=False, min_body_chars=50),
+            articles=[raw_article],
+            verbose=False,
+        )
+        assert stats.ingested == 1
+
+
+class TestRefetchBody:
+    """The extractor can be wrong, so a stored body has to be replaceable.
+
+    Without this, fixing the extraction heuristic could never reach articles already
+    in the database: ingest reuses ``articles.original_text`` for a known article.
+    """
+
+    def _stub_fetch(self, monkeypatch, text):
+        from reading.pipeline import ingest as ingest_module
+        from reading.pipeline.fetch_full import FullText
+
+        calls = []
+
+        def fake_fetch_body(url, cfg=None):
+            calls.append(url)
+            return FullText(text=text, ok=True)
+
+        monkeypatch.setattr(ingest_module, "fetch_body", fake_fetch_body)
+        monkeypatch.setattr(ingest_module, "polite_delay", lambda cfg=None: None)
+        return calls
+
+    def test_long_stored_body_is_left_alone_without_the_flag(
+        self, conn, raw_article, stub_simplifier, test_dictionary, monkeypatch
+    ):
+        run(conn, raw_article, stub_simplifier, test_dictionary)
+        stored = db.list_articles(conn)[0]["original_text"]
+
+        calls = self._stub_fetch(monkeypatch, "Nội dung mới. " * 50)
+        stats = run(
+            conn, raw_article, stub_simplifier, test_dictionary,
+            refresh=True,
+            cfg=replace(settings, fetch_full_text=True, min_body_chars=0),
+        )
+        assert stats.ingested == 1
+        # The body was long enough already, so no re-scrape was justified.
+        assert calls == []
+        assert db.list_articles(conn)[0]["original_text"] == stored
+
+    def test_refetch_body_replaces_the_stored_body(
+        self, conn, raw_article, stub_simplifier, test_dictionary, monkeypatch
+    ):
+        run(conn, raw_article, stub_simplifier, test_dictionary)
+        assert db.list_articles(conn)[0]["body_source"] == "rss"
+
+        fresh = "Nội dung đầy đủ của bài báo. " * 40
+        calls = self._stub_fetch(monkeypatch, fresh)
+        stats = run(
+            conn, raw_article, stub_simplifier, test_dictionary,
+            refresh=True, refetch_body=True,
+            cfg=replace(settings, fetch_full_text=True, min_body_chars=0),
+        )
+
+        assert stats.ingested == 1
+        assert calls, "refetch_body did not re-scrape the article page"
+        article = db.list_articles(conn)[0]
+        assert article["original_text"] == fresh
+        assert article["body_source"] == "full"
+
+    def test_a_stored_body_below_the_gate_is_re_fetched_automatically(
+        self, conn, raw_article, stub_simplifier, test_dictionary, monkeypatch
+    ):
+        """A previously-stored stub is repaired even without --refetch-body."""
+        run(conn, raw_article, stub_simplifier, test_dictionary)
+
+        fresh = "Nội dung đầy đủ của bài báo. " * 40
+        calls = self._stub_fetch(monkeypatch, fresh)
+        stats = run(
+            conn, raw_article, stub_simplifier, test_dictionary,
+            refresh=True,
+            cfg=replace(settings, fetch_full_text=True, min_body_chars=1_000),
+        )
+
+        assert stats.ingested == 1
+        assert calls
+        assert db.list_articles(conn)[0]["body_source"] == "full"

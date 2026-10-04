@@ -31,8 +31,12 @@ SCRATCH = MODULE_DIR / "data" / "_test"
 
 
 
-def make_dictionary(phrases, max_syllables: int = 4) -> CompoundDictionary:
-    """A :class:`CompoundDictionary` over the given space-separated headwords."""
+def make_dictionary(phrases, max_syllables: int = 4, glosses=None) -> CompoundDictionary:
+    """A :class:`CompoundDictionary` over the given space-separated headwords.
+
+    ``glosses`` maps a space-separated headword to its English senses, mirroring the
+    ``glosses`` table that ``tools/build_glosses.py`` fills in.
+    """
     entries: dict[str, DictEntry] = {}
     for phrase in phrases:
         syllables = tuple(s for s in (normalize_syllable(p) for p in phrase.split()) if s)
@@ -46,7 +50,13 @@ def make_dictionary(phrases, max_syllables: int = 4) -> CompoundDictionary:
             syllables=syllables,
             sources="test",
         )
-    return CompoundDictionary(entries, max_syllables=max_syllables)
+    normalized_glosses = {
+        "_".join(normalize_syllable(p) for p in phrase.split()): tuple(senses)
+        for phrase, senses in (glosses or {}).items()
+    }
+    return CompoundDictionary(
+        entries, max_syllables=max_syllables, glosses=normalized_glosses
+    )
 
 
 @pytest.fixture

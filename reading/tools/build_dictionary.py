@@ -13,10 +13,15 @@ Each line is one headword with its syllables separated by spaces (``đại học
 so the lists are a direct statement of compound boundaries — which is exactly the
 "hard constraint" the segmentation reconciler needs.
 
-They contain no definitions, so ``entries.definition`` is left NULL and the
-definition step fills it from DeepSeek.  Re-running this script is safe: it
-rebuilds the dictionary table from scratch (this file is a build artifact, not
-user data).
+They contain no definitions, so ``entries.definition`` is left NULL.  English
+glosses come from a separate source and live in the separate ``glosses`` table,
+imported afterwards by::
+
+    python -m reading.tools.build_glosses
+
+Re-running this script is safe: it rebuilds the ``entries`` table from scratch
+(this file is a build artifact, not user data) and leaves ``glosses`` alone, so
+the two steps can be run in either order.
 """
 from __future__ import annotations
 
@@ -43,6 +48,20 @@ CREATE TABLE IF NOT EXISTS entries (
     freq_rank       INTEGER             -- NULL: word lists are not frequency-ordered
 );
 CREATE INDEX IF NOT EXISTS idx_entries_syllable_count ON entries (syllable_count);
+
+-- English (Việt→Anh) glosses, filled in by tools/build_glosses.py.  A separate
+-- table because it is built from a separate source and is not restricted to the
+-- headwords above.  Created here so the file always has the shape the loader
+-- expects, even before the gloss import has run.
+CREATE TABLE IF NOT EXISTS glosses (
+    headword        TEXT NOT NULL,
+    pos             TEXT NOT NULL DEFAULT '',
+    rank            INTEGER NOT NULL DEFAULT 0,
+    gloss           TEXT NOT NULL,
+    tags            TEXT NOT NULL DEFAULT '',
+    source          TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_glosses_headword ON glosses (headword, rank);
 """
 
 

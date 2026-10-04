@@ -62,10 +62,23 @@ twice.
 
 ### 2. Body
 
-`pipeline/fetch_full.py` scores every `<p>` by length and keeps the container whose
-paragraphs hold the most text, after dropping `script`/`style`/`nav`/`footer`/`aside`/
-`figure`. It is a heuristic, not a readability port, and it is allowed to fail: the RSS
-summary is the fallback and `articles.body_source` records which was used.
+`pipeline/fetch_full.py` strips boilerplate (`script`/`style`/`nav`/`footer`/`aside`/
+`figure`), keeps the paragraphs that look like prose — long enough, and not mostly
+anchor text — and then scores every **ancestor** by how much of that prose it contains.
+The container it returns is the deepest one still holding ~all of it.
+
+Scoring ancestors rather than immediate parents is load-bearing. BBC wraps each
+paragraph in its own `<div>`, so every immediate parent holds exactly one paragraph, all
+the scores tie, and a max() over parents returns whichever came first in the document.
+The page held 8,011 characters across 48 paragraphs; the extractor stored 315 — the
+first paragraph — and reported `body_source='full'`, because 315 clears the
+`MIN_BODY_CHARS = 240` floor. That is how a silent 96% loss looks from the outside, and
+it is why the extractor now has its own test file.
+
+It is still a heuristic, not a readability port, and it is allowed to fail: the RSS
+summary is the fallback and `articles.body_source` records which was used. Items that
+are short even after extraction are dropped by the ingest gate below rather than stored
+as stubs.
 
 ### 3. Simplification
 
@@ -75,6 +88,25 @@ DeepSeek's context cache can hit. All variation rides in the user message, *afte
 
 The model returns JSON: the rewritten article with `_` marking compound boundaries, plus
 pre-teach vocabulary and grammar points.
+
+Two properties of the call are load-bearing, and both were learned the hard way:
+
+- **The model must reason.** `deepseek-flash` reasons before answering and that is what
+  makes it rewrite at all; with reasoning disabled it returns the source verbatim.
+  Reasoning is billed as completion tokens and dominates the cost, so the run summary
+  prints the split.
+- **The response is streamed.** A non-streamed request leaves the socket silent until
+  the whole answer exists; for an 8,000-character article that is minutes, and the
+  server drops the connection mid-generation. Streaming also means reasoning arrives as
+  `delta.reasoning_content`, which the reader discards rather than letting it leak into
+  the stored article.
+
+The prompt states the rewriting requirement and the segmentation requirement as two
+separate steps, and calls out transcription as a failure — a model that treats
+"segment these words" as the whole task is the failure mode this pipeline actually hit.
+
+`ingest_article` measures the share of words the rewrite changed and prints it, because
+a transcription produces a bundle that is valid in every other respect.
 
 ### 4. Two segmentations of the same text
 
@@ -114,12 +146,25 @@ expand/shrink handles act on it.
 ### 6. Token map — `pipeline/tokens.py`
 
 One row per span: `surface`, underscore `form`, `[start_char, end_char)`, syllable
-count, CEFR tag, definition and provenance, ambiguity flag and candidates.
+count, CEFR tag, provenance, ambiguity flag and candidates — plus **two** definition
+columns, because the two languages have different sources and different lifetimes:
 
-Definitions are resolved cheapest-first: the pre-teach glosses from the simplification
-call (free), then the dictionary (free, but the bundled lists carry no glosses), then
+| Column | Source | Language |
+|---|---|---|
+| `definition_en` | `glosses` table in the dictionary (built by `tools/build_glosses.py`) | English |
+| `definition_vi` | the pre-teach glosses from the simplification call | Vietnamese |
+| `senses_en` | further English senses, JSON, for the sheet's secondary line | English |
+| `definition` | whichever of the two is primary — English when present | — |
+
+Definitions are resolved cheapest-first: the local dictionary (free, offline), then the
+pre-teach glosses from the simplification call (free, already paid for), then
 **nothing** — a NULL that the runtime fallback exists to fill. Ingest never makes a
 per-word call; that would undo the point of batching.
+
+Keeping the columns separate rather than merging them is what lets the reader show
+English first with the Vietnamese gloss underneath, and lets a dictionary rebuild change
+one language without disturbing the other. It also lifted stored-definition coverage
+from 17% of tokens (pre-teach only) to 88%.
 
 ### 7. Storage
 
@@ -130,7 +175,7 @@ files and records them in `schema_migrations`. Nothing drops or recreates a tabl
 |---|---|
 | `articles` | one row per source article, `UNIQUE(source, guid)`, with attribution |
 | `article_versions` | one simplification per `(article, level)`, with model + prompt version + quality |
-| `tokens` | the token map, indexed on `(version_id, start_char, end_char)` |
+| `tokens` | the token map, indexed on `(version_id, start_char, end_char)`, with both definition languages |
 | `preteach` | vocabulary and grammar points, keyed by version |
 | `lookup_cache` | fallback answers, so one context is never paid for twice |
 
@@ -175,11 +220,18 @@ the answer is keyed by a hash of `(sentence, selection)` so repeat taps are free
 |---|---|---|
 | simplification + segmentation | once per (article, level) | 1 model call |
 | segmentation, reconciliation, token map | once per (article, level) | local |
-| definitions for the token map | once, reusing that same call's output | free |
+| English glosses for the token map | once, from the local dictionary | free |
+| Vietnamese glosses for the token map | once, reusing that same call's output | free |
+| an item too short to be a reading exercise | once | **no call — skipped first** |
 | a tap with a stored definition | every tap | free |
 | a tap with no stored definition | rare, then cached | 1 short call |
 
 Prompt caching is designed in: system prompts are constants, variable content follows.
+
+Nothing runs on a schedule. There is no cron, no workflow and no trigger in the app: the
+three paid-relevant steps — `build_glosses`, `ingest`, `build_site` — are commands a
+human types, and opening the reader only fetches a committed bundle. That is deliberate,
+given the off-peak guard exists precisely because a run costs money.
 
 ## Phase 2 (deliberately not built)
 
@@ -191,11 +243,21 @@ rather than an ORM, so it does not need to change either.
 
 ## Testing
 
-`105 tests`. The reconciler and token-map builder are unit-tested against hand-written
+`251 tests`. The reconciler and token-map builder are unit-tested against hand-written
 segmentations, because their invariants (spans tile the syllables; offsets address the
 exact substring) are what the reader depends on. One integration test drives the whole
 pipeline over a fixture article with DeepSeek stubbed, so the pipeline's own logic is
 under test rather than the model's.
+
+Three files exist because a bug got through without them. `test_fetch_full.py` covers
+the container-scoring shapes that actually occur (per-paragraph wrappers, navigation
+furniture, link farms, pages with no prose at all); `test_glosses.py` pins the ordering
+rules that decide which English sense a tap shows first, against hand-written records
+rather than the 79 MB source; `test_deepseek.py` covers the streamed-response reader
+against canned SSE frames — the path every article now takes, and the one where
+reasoning text leaking into the article, or usage going unreported, would be invisible.
+`test_text.py` covers paragraph preservation and the rewrite-change measurement, which
+the reader and the quality guard depend on.
 
 The suite uses the installed `underthesea` model but no network: RSS, article and page
 fixtures are saved files. That is why the module's tests still mean something on a day

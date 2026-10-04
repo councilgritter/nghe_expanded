@@ -81,8 +81,14 @@ def bundle_for_version(conn, version_id: int) -> dict | None:
                 "syl_start": token["syl_start"],
                 "syl_end": token["syl_end"],
                 "cefr": token["cefr_level"],
+                # `definition` is the primary string to show (English when the
+                # dictionary has it, Vietnamese otherwise); the two languages are
+                # also carried separately so the sheet can show both.
                 "definition": token["definition"],
                 "definition_src": token["definition_src"],
+                "definition_en": token["definition_en"],
+                "definition_vi": token["definition_vi"],
+                "senses_en": _load_candidates(token["senses_en"]),
                 "ambiguous": bool(token["ambiguous"]),
                 "candidates": _load_candidates(token["candidates"]),
             }
@@ -118,6 +124,7 @@ def _attach_syllable_indices(tokens: list[dict], syllables) -> None:
 
 
 def _load_candidates(raw):
+    """Parse a JSON-array column (candidate segmentations, English senses)."""
     if not raw:
         return None
     import json
@@ -133,6 +140,7 @@ def _preteach_row(row) -> dict:
     return {
         "term": row["term"],
         "gloss": row["gloss"],
+        "gloss_en": row["gloss_en"],
         "cefr": row["cefr_level"],
         "example": row["example"],
     }

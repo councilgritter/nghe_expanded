@@ -6,6 +6,10 @@ data/_test/
 # Build artifacts: regenerate with tools/build_dictionary.py
 data/dictionary.sqlite3
 
+# Downloaded gloss source (kaikki.org Vietnamese extract, ~80 MB).  Re-fetch with
+# tools/build_glosses.py --source <url>; never committed.
+data/_dict_src/
+
 # The reading database is local state, never committed
 data/*.sqlite3
 data/*.sqlite3-wal
