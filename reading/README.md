@@ -155,11 +155,50 @@ and nothing secret reaches the browser.
 | `READING_MAX_COMPOUND_SYLLABLES` | `4` | longest dictionary-enforced compound |
 | `READING_DEFAULT_CEFR` | `B1` | default level |
 | `READING_INGEST_LIMIT` | `0` | cap per run, `0` = unlimited |
+| `READING_ALLOW_PEAK` | `false` | approve running during DeepSeek's peak hours |
+| `READING_PEAK_WINDOWS` | `01:00-04:00,06:00-10:00` | peak windows, UTC hours |
+| `READING_PEAK_WEEKDAYS` | `Mon,Tue,Wed,Thu,Fri` | days those windows apply |
+| `READING_OFFPEAK_DATES` | — | ISO dates known to be Chinese holidays (off-peak all day) |
+
+## Off-peak guard
+
+**Ingest will not start during DeepSeek's peak hours without explicit approval.**
+Peak costs double, and a run both fetches and translates, so the whole run is gated
+rather than just the model calls.
+
+DeepSeek's published window is **01:00–04:00 and 06:00–10:00 UTC, Monday through
+Friday, excluding Chinese public holidays**; every other hour is off-peak at half
+price, including all of Saturday and Sunday
+([pricing docs](https://api-docs.deepseek.com/quick_start/pricing/)).
+
+Outside the window the CLI refuses and says when it opens:
+
+```
+Pricing: PEAK now (2026-10-05 02:14 UTC) — off-peak resumes 2026-10-05 04:00 UTC (in 2h)
+
+Refusing to run during peak hours: DeepSeek bills double, and this run would both
+fetch and translate.
+  peak = 01:00-04:00, 06:00-10:00 UTC on Mon, Tue, Wed, Thu, Fri (all other hours off-peak)
+  Off-peak resumes 2026-10-05 04:00 UTC.
+Re-run then, or pass --allow-peak (or set READING_ALLOW_PEAK=true) to approve this one explicitly.
+```
+
+Approval is per-run (`--allow-peak`) or blanket (`READING_ALLOW_PEAK=true`). The guard
+takes `now` as an argument rather than reading the clock, because it is the one place
+that authorises spending money and so is tested directly rather than through the
+system time.
+
+**Holidays are the conservative case.** Knowing whether today is a Chinese public
+holiday needs a calendar this module does not carry, so an unlisted holiday is treated
+as **peak** and the run waits rather than paying double by mistake. List the dates you
+know in `READING_OFFPEAK_DATES` and those days become off-peak all day.
 
 ## Cost
 
 Kept low by design:
 
+- **Off-peak only, by default.** A run is refused during DeepSeek's peak hours, which
+  cost double — see the guard above. That halves the bill for no code change.
 - **One DeepSeek call per (article, level)** at ingest — never per word. Segmentation,
   reconciliation and the token map all run locally.
 - **Definitions are mostly free**: the pre-teach glosses from that same call are reused

@@ -85,8 +85,12 @@ class Settings:
             "DEEPSEEK_BASE_URL", "https://api.deepseek.com"
         ).rstrip("/")
     )
+    # Model names follow the current pricing page.  `deepseek-chat` was the old
+    # alias; `deepseek-flash` is what the docs name now, and `deepseek-v4-pro`
+    # costs roughly 4x for work this pipeline does not need.
+    # https://api-docs.deepseek.com/quick_start/pricing/
     deepseek_model: str = field(
-        default_factory=lambda: os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+        default_factory=lambda: os.environ.get("DEEPSEEK_MODEL", "deepseek-flash")
     )
     deepseek_timeout_s: float = field(
         default_factory=lambda: float(os.environ.get("DEEPSEEK_TIMEOUT_S", "120"))
@@ -144,6 +148,38 @@ class Settings:
     ingest_limit: int = field(
         default_factory=lambda: int(os.environ.get("READING_INGEST_LIMIT", "0"))
     )
+
+    # --- off-peak guard ----------------------------------------------------
+    # An ingest run spends money, so it refuses to start during DeepSeek's peak
+    # hours unless explicitly approved.  Defaults mirror the published windows:
+    # 01:00-04:00 and 06:00-10:00 UTC, Mon-Fri; everything else is off-peak.
+    allow_peak: bool = field(default_factory=lambda: _bool("READING_ALLOW_PEAK", False))
+    peak_windows: str = field(
+        default_factory=lambda: os.environ.get(
+            "READING_PEAK_WINDOWS", "01:00-04:00,06:00-10:00"
+        )
+    )
+    peak_weekdays: str = field(
+        default_factory=lambda: os.environ.get(
+            "READING_PEAK_WEEKDAYS", "Mon,Tue,Wed,Thu,Fri"
+        )
+    )
+    # Comma-separated ISO dates known to be Chinese public holidays (off-peak all day).
+    offpeak_dates: str = field(
+        default_factory=lambda: os.environ.get("READING_OFFPEAK_DATES", "")
+    )
+
+    def peak_policy(self):
+        """The resolved :class:`reading.pipeline.offpeak.PeakPolicy`."""
+        from reading.pipeline.offpeak import PeakPolicy, parse_weekdays, parse_windows
+
+        return PeakPolicy(
+            windows=parse_windows(self.peak_windows),
+            weekdays=parse_weekdays(self.peak_weekdays),
+            offpeak_dates=frozenset(
+                part.strip() for part in self.offpeak_dates.split(",") if part.strip()
+            ),
+        )
 
     @property
     def cefr_levels(self) -> tuple[str, ...]:

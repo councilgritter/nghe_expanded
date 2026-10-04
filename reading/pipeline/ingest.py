@@ -19,9 +19,10 @@ import argparse
 import sys
 import traceback
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
-from reading.pipeline import prompts, sources
+from reading.pipeline import offpeak, prompts, sources
 from reading.pipeline.deepseek import DeepSeekClient, DeepSeekError, Simplifier
 from reading.pipeline.fetch_full import fetch_body, polite_delay
 from reading.pipeline.reconcile import ReconcileStats, reconcile, summarize
@@ -348,6 +349,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="skip the compound-dictionary hard constraint")
     parser.add_argument("--refresh", action="store_true",
                         help="re-generate (article, level) pairs that already exist")
+    parser.add_argument("--allow-peak", action="store_true",
+                        help="run even during DeepSeek's peak hours (costs double)")
     parser.add_argument("--list", action="store_true", help="list stored articles and exit")
     args = parser.parse_args(argv)
 
@@ -379,6 +382,19 @@ def main(argv: list[str] | None = None) -> int:
     dictionary = None if args.no_dictionary else _open_dictionary(cfg, required=False)
     if dictionary is not None:
         print(f"Dictionary: {len(dictionary):,} headwords (<= {dictionary.max_syllables} syllables)")
+
+    # Off-peak guard.  Ingest spends money, so it will not start during DeepSeek's
+    # peak hours without explicit approval.  Reading the feeds is cheap but it is
+    # gated too, so a scheduled run is either wholly inside the window or a no-op.
+    policy = cfg.peak_policy()
+    now = datetime.now(timezone.utc)
+    allowed, refusal = offpeak.check(
+        policy, now, allow_peak=args.allow_peak or cfg.allow_peak
+    )
+    print(f"Pricing: {offpeak.status_line(policy, now)}")
+    if not allowed:
+        print("\n" + refusal)
+        return 2
 
     articles = None
     if args.source:
