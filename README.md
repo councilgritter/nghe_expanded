@@ -46,6 +46,7 @@ and notebook use these same root-relative paths.
 ```
 index.html                     the whole app, one file
 data.json                      9,006 questions built from the CSVs
+theme.js                       dark/light theme, shared with the reading page
 sw.js                          makes the app work offline once you've used it
 manifest.webmanifest, icon.svg   what lets you install it on your phone
 
@@ -62,6 +63,7 @@ install_approved.py            superseded by the Action (legacy Colab installer)
 scripts/install_recordings.py  the Action's installer: approved takes → R2
 apps_script/                   the collector + review page (Google Apps Script)
 reading/                       the reading practice module — see reading/README.md
+refresh-worker/                the password-gated refresh endpoint (Cloudflare Worker)
 ```
 
 Audio is **not** in this listing: it is served from R2 and `audio/` is gitignored.
@@ -159,6 +161,9 @@ like an app and works offline once the clips have been cached.
 Tap the amber button to hear the syllable again. **Slower** replays at two-thirds
 speed. Tap a tile to answer.
 
+The ◐ button in the top bar switches between the light and dark theme; the choice is
+remembered, and until you make one the app follows your system setting.
+
 After you answer, **every tile becomes playable** — tap between `ngọc` and `ngọt`
 to hear the difference directly. This is the part that actually trains your ear;
 the scoring is just bookkeeping.
@@ -205,10 +210,30 @@ Articles come from **VOA Tiếng Việt** and **BBC News Tiếng Việt**. Each 
 DeepSeek at the target level, then split into words by a reconciler that treats a local
 Vietnamese compound dictionary as authoritative: where the dictionary knows a word, it
 wins; where the model and `underthesea` disagree, both readings are kept and the word is
-flagged so the reader can widen or narrow it.
+flagged so the reader can widen or narrow it. Where the dictionary only *thinks* it knows
+a word — the word lists are corpus-derived, and contain phrases like `của ông` — two
+guards refuse the merge, so the words behind the phrase stay tappable.
+
+Around the article:
+
+- **Highlight any run of words** (drag, or shift-click) and the dictionary is searched
+  for exactly that string, offline. The exported bundle carries every dictionary span in
+  the article, not just the tokens the segmenter produced, so `Thay vào đó` — which
+  arrives as three words — still resolves to "instead".
+- **A speaker button** reads the article, a paragraph or a word aloud with the device's
+  own Vietnamese voice: no key, no server, works offline.
+- **Comprehension questions and a writing task** are generated per article, by a second
+  and much cheaper DeepSeek call on the simplified text. Multiple choice is graded
+  exactly; the writing task is checked against the facts it has to contain and shown
+  beside a model answer.
+- **A light/dark theme**, following the system preference until you choose.
+- **A password-gated ↻ refresh button** (off by default) that starts an ingest run on
+  GitHub Actions — `refresh-worker/` holds the token and the password, the workflow
+  holds the key. The API key is never in the page.
 
 Nothing here runs on a schedule — ingest, gloss import and export are commands you type,
-so opening the app never spends a token.
+so opening the app never spends a token. The refresh button runs the same command, on
+your behalf, behind a password.
 
 It follows the same shape as the drill above — an offline Python pipeline and a static
 page, no server — so it needs no new infrastructure:
@@ -217,14 +242,14 @@ page, no server — so it needs no new infrastructure:
 python -m reading.tools.build_dictionary        # once: compound boundaries
 python -m reading.tools.build_glosses           # once: English glosses (~80 MB download)
 python -m reading.pipeline.ingest --cefr B1 --limit 5
+python -m reading.pipeline.ingest --refresh-exercises   # optional: practice content
 python -m reading.tools.build_site
 python -m http.server 8000                      # from the repo root, open /index.html
 ```
 
 The app asks **Nghe / Nói** or **Đọc / Viết** when it opens; this module is the Đọc
 half, and settings can switch. The reading page links back, so neither half is a
-one-way trip. (Writing — a task set after the article — will be a further stage in
-this same flow rather than a separate mode.)
+one-way trip.
 
 It needs a `DEEPSEEK_API_KEY` for ingest (`reading/.env`), and nothing else. Both news
 sources require attribution, which is stored with each article and always shown in the
@@ -270,3 +295,11 @@ typos and tone-stripped headline spellings that slipped through.
 **Generated speech is not a native speaker.** It's good enough to train
 discrimination, but if a contrast sounds wrong to you, trust your ear and check
 with a Vietnamese speaker rather than assuming the model is right.
+
+**The reading module's practice content is only as good as its prompt.** The
+comprehension questions and the writing task are written by the model and nothing
+downstream verifies that a question is answerable from the article or that a distractor
+is plausible. `prompts.EXERCISES_PROMPT_VERSION` is stored per article so a prompt
+change is visible in the data. And the writing task's "check" is a checklist — it can
+tell you a fact is missing, never that a sentence is good. Details in
+`reading/README.md`.

@@ -13,6 +13,7 @@ from reading.pipeline.reconcile import (
     SRC_AGREED,
     SRC_DICTIONARY,
     SRC_LLM,
+    SRC_SPLIT,
     SRC_UNDERTHESEA,
     reconcile,
     summarize,
@@ -104,6 +105,91 @@ class TestDictionaryConstraint:
         spans = [(0, 1), (1, 2)]
         result = reconcile(syllables, spans, spans, dictionary=dictionary)
         assert result[0].source == SRC_AGREED
+
+
+class TestGuards:
+    """The word lists are corpus-derived, so a lock has to be earned.
+
+    These pin the three guards that stop ``của ông`` being one word: a span made
+    only of function words is split, an unexplainable span loses to one the app can
+    gloss, and a span that crosses punctuation is never emitted at all.
+    """
+
+    def test_a_glossed_run_of_function_words_is_a_word(self):
+        # "trước đây" (before), "chúng tôi" (we) and "tháng Một" (January) are all
+        # runs of function words and all real words.  Splitting them produced worse
+        # readings than the compound — "tôi" leads with "slave" — so the guard only
+        # splits a run that *nothing* can gloss.
+        dictionary = make_dictionary(
+            ["trước đây", "chúng tôi"],
+            glosses={"trước đây": ("before",), "chúng tôi": ("we",)},
+        )
+        syllables = syllables_of("trước đây chúng tôi")
+        spans = [(0, 2), (2, 4)]
+        result = reconcile(syllables, spans, spans, dictionary=dictionary)
+        assert [(s.start, s.end) for s in result] == [(0, 2), (2, 4)]
+        assert all(s.source == SRC_DICTIONARY for s in result)
+
+    def test_an_unglossed_run_of_function_words_is_not_a_word(self):
+        # "của ông" is in the corpus word list and nothing glosses it, so the merge
+        # is refused and each word behind the phrase becomes tappable.
+        dictionary = make_dictionary(["của ông"])
+        syllables = syllables_of("của ông nói")
+        spans = [(0, 2), (2, 3)]
+        result = reconcile(syllables, spans, spans, dictionary=dictionary)
+        assert (result[0].start, result[0].end) == (0, 1)
+        assert result[0].source == SRC_SPLIT
+
+    def test_a_real_compound_containing_a_function_word_is_untouched(self):
+        # The guard only fires when *every* syllable is a function word, so words
+        # like "không khí" (air) and "trong nước" (domestic) still lock.
+        dictionary = make_dictionary(["không khí"])
+        syllables = syllables_of("không khí đây")
+        spans = [(0, 2), (2, 3)]
+        result = reconcile(syllables, spans, spans, dictionary=dictionary)
+        assert (result[0].start, result[0].end) == (0, 2)
+        assert result[0].source == SRC_DICTIONARY
+
+    def test_without_a_dictionary_a_function_word_run_is_split(self):
+        # A boundaries-only or absent dictionary cannot gloss anything, so the
+        # conservative reading is the split.
+        syllables = syllables_of("của ông")
+        result = reconcile(syllables, [(0, 2)], [(0, 2)])
+        assert [(s.start, s.end) for s in result] == [(0, 1), (1, 2)]
+
+    def test_a_span_crossing_punctuation_is_never_emitted(self):
+        # Two syllables the segmenters call one word, with a paragraph break between
+        # them.  The syllable sequence carries no punctuation, so only the caller's
+        # predicate can see it.
+        syllables = syllables_of("Lâm Chính")
+        spans = [(0, 2)]
+        result = reconcile(
+            syllables, spans, spans, allow_span=lambda start, end: end - start < 2
+        )
+        assert [(s.start, s.end) for s in result] == [(0, 1), (1, 2)]
+        # The forced split is visible; the second syllable is a legal word on its own.
+        assert result[0].source == SRC_SPLIT
+        assert result[1].source == SRC_AGREED
+
+    def test_the_guard_also_applies_to_a_dictionary_lock(self):
+        dictionary = make_dictionary(["đại học"], glosses={"đại học": ("university",)})
+        syllables = syllables_of("đại học")
+        result = reconcile(
+            syllables,
+            [(0, 1), (1, 2)],
+            [(0, 1), (1, 2)],
+            dictionary=dictionary,
+            allow_span=lambda start, end: end - start < 2,
+        )
+        assert [(s.start, s.end) for s in result] == [(0, 1), (1, 2)]
+
+    def test_guard_splits_are_counted(self):
+        dictionary = make_dictionary(["của ông"])
+        syllables = syllables_of("của ông")
+        result = reconcile(syllables, [(0, 2)], [(0, 2)], dictionary=dictionary)
+        stats = summarize(result)
+        assert stats.split_by_guard == 1
+        assert stats.from_dictionary == 0
 
 
 class TestInvariants:

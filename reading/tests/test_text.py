@@ -11,10 +11,12 @@ import pytest
 from reading.pipeline.text import (
     GroupingError,
     check_grouping,
+    contiguous_predicate,
     counts_to_spans,
     grouping_from_underscores,
     nfc,
     slice_text,
+    span_is_contiguous,
     spans_to_counts,
     squeeze_whitespace,
     squeeze_whitespace_preserving_paragraphs,
@@ -58,6 +60,64 @@ class TestSyllables:
         syllables = syllables_with_offsets(TEXT)
         assert slice_text(TEXT, syllables, 0, 2) == "Chúng tôi"
         assert slice_text(TEXT, syllables, 3, 5) == "học ở"
+
+
+class TestContiguity:
+    """The guard that keeps a "word" inside one sentence.
+
+    Syllables are ``\\w+`` runs, so punctuation and paragraph breaks are invisible to
+    the segmentation: without this check a span can be sliced across a full stop and
+    the token map emits ``Lâm.\\n\\nChính`` as one tappable word.
+    """
+
+    def test_adjacent_syllables_with_one_space_are_contiguous(self):
+        text = "trường đại học quốc gia"
+        syllables = syllables_with_offsets(text)
+        assert span_is_contiguous(text, syllables, 0, 4)
+
+    def test_a_full_stop_inside_the_span_breaks_contiguity(self):
+        text = "Lâm. Chính phủ"
+        syllables = syllables_with_offsets(text)
+        assert [s.text for s in syllables] == ["Lâm", "Chính", "phủ"]
+        assert not span_is_contiguous(text, syllables, 0, 2)
+        assert span_is_contiguous(text, syllables, 1, 3)
+
+    def test_a_paragraph_break_breaks_contiguity(self):
+        text = "một hai.\n\nba bốn"
+        syllables = syllables_with_offsets(text)
+        assert [s.text for s in syllables] == ["một", "hai", "ba", "bốn"]
+        # "hai" then a full stop, a blank line, then "ba": never one word.
+        assert not span_is_contiguous(text, syllables, 1, 3)
+        assert span_is_contiguous(text, syllables, 2, 4)
+
+    def test_single_syllables_are_always_contiguous(self):
+        text = "Lâm. Chính"
+        syllables = syllables_with_offsets(text)
+        assert span_is_contiguous(text, syllables, 0, 1)
+        assert span_is_contiguous(text, syllables, 1, 2)
+
+    def test_the_predicate_binds_text_and_syllables(self):
+        text = "Lâm. Chính"
+        syllables = syllables_with_offsets(text)
+        allow = contiguous_predicate(text, syllables)
+        assert allow(0, 1)
+        assert not allow(0, 2)
+
+    def test_a_number_keeps_its_separators(self):
+        # "300.000" and "1/7/2025" are one token each: the syllable splitter gives
+        # digit runs, so the guard has to let a separator between digits through.
+        text = "khoảng 300.000 người, ngày 1/7/2025"
+        syllables = syllables_with_offsets(text)
+        texts = [s.text for s in syllables]
+        start = texts.index("300")
+        assert span_is_contiguous(text, syllables, start, start + 2)
+        start = texts.index("1")
+        assert span_is_contiguous(text, syllables, start, start + 3)
+
+    def test_a_separator_between_words_is_still_punctuation(self):
+        text = "một-hai"
+        syllables = syllables_with_offsets(text)
+        assert not span_is_contiguous(text, syllables, 0, 2)
 
 
 class TestGroupingFromUnderscores:

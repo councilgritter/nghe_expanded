@@ -2,9 +2,9 @@
 // first and the cache is only the offline fallback. Audio clips (served from R2) are
 // cached the first time each is heard, so the app still works offline.
 // Bump SHELL/CLIPS when the caching logic changes so installed copies drop the old cache.
-const SHELL = 'nghe-shell-v3';
+const SHELL = 'nghe-shell-v4';
 const CLIPS = 'nghe-clips-v3';
-const FILES = ['./', 'index.html', 'data.json', 'manifest.webmanifest', 'icon.svg'];
+const FILES = ['./', 'index.html', 'data.json', 'manifest.webmanifest', 'icon.svg', 'theme.js'];
 
 // where the audio lives now — clips from this host are cached like local /audio/ used to be
 const AUDIO_HOST = 'pub-02e9ae05e89a4e768502c5de99c7a3d9.r2.dev';

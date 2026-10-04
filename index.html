@@ -6,12 +6,14 @@
 <title>Nghe — Vietnamese listening drill</title>
 <link rel="manifest" href="manifest.webmanifest">
 <meta name="theme-color" content="#101726">
+<script src="theme.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;600;800&display=swap" rel="stylesheet">
 <style>
 :root{
   --ink:#101726; --slate:#1a2434; --edge:#2b3a50; --muted:#8496ae;
+  --tx:#e6ecf5;
   --paper:#efebe1; --onpaper:#17212f;
   --amber:#f0b429; --ok:#43a67c; --no:#d9534a;
   --pad: clamp(12px, 3.5vw, 22px);
@@ -19,10 +21,18 @@
   padding-top:env(safe-area-inset-top,0px);
   padding-bottom:env(safe-area-inset-bottom,0px);
 }
+/* Light theme. Same variable names, so every rule that already reads a variable
+   follows without being touched; theme.js puts data-theme on <html> before paint. */
+[data-theme="light"]{
+  --ink:#f7f5f0; --slate:#ffffff; --edge:#dcd5c8; --muted:#6b6257;
+  --tx:#1c1a17;
+  --paper:#e9e3d7; --onpaper:#1c1a17;
+  --amber:#b4761a; --ok:#2f7d4f; --no:#c0392b;
+}
 *,*::before,*::after{box-sizing:inherit}
 html,body{height:100%}
 body{
-  margin:0; background:var(--ink); color:#e6ecf5;
+  margin:0; background:var(--ink); color:var(--tx);
   font-family:'Be Vietnam Pro',system-ui,-apple-system,'Segoe UI',sans-serif;
   font-weight:400; -webkit-font-smoothing:antialiased;
   overscroll-behavior:none;
@@ -34,7 +44,7 @@ button:focus-visible{outline:2px solid var(--amber);outline-offset:3px}
 
 /* --- status strip --- */
 .strip{display:flex;align-items:center;gap:var(--pad);padding:14px 2px 10px;font-size:13px;color:var(--muted)}
-.strip b{color:#e6ecf5;font-weight:600}
+.strip b{color:var(--tx);font-weight:600}
 .strip .sp{flex:1}
 .gear{padding:6px;border-radius:8px;line-height:0}
 .gear svg{width:20px;height:20px;stroke:var(--muted);fill:none;stroke-width:1.7}
@@ -57,7 +67,7 @@ button:focus-visible{outline:2px solid var(--amber);outline-offset:3px}
   font-size:13px;color:var(--muted);padding:7px 14px;border-radius:999px;
   border:1px solid var(--edge);
 }
-.sub button:hover{color:#e6ecf5;border-color:var(--muted)}
+.sub button:hover{color:var(--tx);border-color:var(--muted)}
 #cmpOpen{color:var(--amber);border-color:var(--amber)}
 
 /* --- compare against my own voice: overlay with a volume-reactive orbit --- */
@@ -68,7 +78,7 @@ button:focus-visible{outline:2px solid var(--amber);outline-offset:3px}
 .cmp-box{width:100%;max-width:420px;background:var(--slate);border:1px solid var(--edge);
   border-radius:20px;padding:26px 22px 20px;text-align:center}
 .cmp-kicker{margin:0;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
-.cmp-word{font-size:clamp(34px,11vw,50px);font-weight:800;line-height:1.1;margin:6px 0 22px;color:#e6ecf5}
+.cmp-word{font-size:clamp(34px,11vw,50px);font-weight:800;line-height:1.1;margin:6px 0 22px;color:var(--tx)}
 .cmp-rec[hidden],.cmp-tracks[hidden]{display:none}
 
 .cmp-mic-wrap{position:relative;width:132px;height:132px;margin:0 auto}
@@ -80,7 +90,7 @@ button:focus-visible{outline:2px solid var(--amber);outline-offset:3px}
 .cmp-ring.beat{animation:cmpbeat 1s ease-in-out infinite}
 @keyframes cmpbeat{50%{transform:scale(1.22);opacity:.85}}
 .cmp-mic{position:absolute;left:50%;top:50%;width:104px;height:104px;margin:-52px 0 0 -52px;
-  border-radius:50%;background:var(--ink);border:1px solid var(--edge);color:#e6ecf5;
+  border-radius:50%;background:var(--ink);border:1px solid var(--edge);color:var(--tx);
   display:flex;align-items:center;justify-content:center;z-index:1;
   touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 .cmp-mic svg{width:34px;height:34px;fill:none;stroke:currentColor;stroke-width:1.8;
@@ -99,12 +109,12 @@ button:focus-visible{outline:2px solid var(--amber);outline-offset:3px}
   display:flex;align-items:center;justify-content:center;color:var(--amber)}
 .cmp-chip svg{width:18px;height:18px;fill:currentColor}
 .cmp-chip.playing{background:var(--amber);color:#241a00;border-color:var(--amber)}
-.cmp-syl{font-size:21px;font-weight:600;color:#e6ecf5}
+.cmp-syl{font-size:21px;font-weight:600;color:var(--tx)}
 .cmp-redo{width:100%;margin-top:4px;padding:12px;border-radius:12px;
   border:1px solid var(--edge);color:var(--muted);font-size:14px}
-.cmp-redo:hover{color:#e6ecf5;border-color:var(--muted)}
+.cmp-redo:hover{color:var(--tx);border-color:var(--muted)}
 .cmp-close{width:100%;margin-top:12px;padding:13px;border-radius:12px;
-  background:#e6ecf5;color:var(--ink);font-weight:600;font-size:15px}
+  background:var(--tx);color:var(--ink);font-weight:600;font-size:15px}
 @media (max-width:560px){ #cmpOpen{font-size:12px;padding:7px 10px} .sub{gap:7px} }
 .prompt{font-size:13px;color:var(--muted);text-align:center;min-height:1.2em}
 
@@ -128,8 +138,8 @@ button:focus-visible{outline:2px solid var(--amber);outline-offset:3px}
 /* --- verdict line --- */
 .verdict{display:flex;align-items:center;gap:12px;padding:0 2px 16px;min-height:44px;font-size:14px}
 .verdict .lab{color:var(--muted);flex:1}
-.verdict .lab b{color:#e6ecf5;font-weight:600}
-.next{background:#e6ecf5;color:var(--ink);font-weight:600;padding:11px 22px;border-radius:10px}
+.verdict .lab b{color:var(--tx);font-weight:600}
+.next{background:var(--tx);color:var(--ink);font-weight:600;padding:11px 22px;border-radius:10px}
 
 /* --- settings --- */
 .sheet{
@@ -143,7 +153,7 @@ button:focus-visible{outline:2px solid var(--amber);outline-offset:3px}
 .sheet h3{font-size:12px;font-weight:600;color:var(--muted);margin:26px 0 10px}
 .chips{display:flex;flex-wrap:wrap;gap:8px}
 .chip{padding:9px 15px;border-radius:999px;border:1px solid var(--edge);font-size:14px;color:var(--muted)}
-.chip.on{background:#e6ecf5;color:var(--ink);border-color:#e6ecf5;font-weight:600}
+.chip.on{background:var(--tx);color:var(--ink);border-color:var(--tx);font-weight:600}
 
 /* --- first-run pickers: mode (the app's entry) and accent (inside the drill) --- */
 .picker{position:fixed;inset:0;z-index:30;background:var(--ink);display:none;
@@ -156,7 +166,7 @@ button:focus-visible{outline:2px solid var(--amber);outline-offset:3px}
   border-radius:14px;border:1px solid var(--edge);background:var(--slate);text-align:left}
 .picker .accent:hover,.picker .accent:focus-visible,
 .picker .choice:hover,.picker .choice:focus-visible{border-color:var(--amber)}
-.picker .accent b,.picker .choice b{display:block;font-size:18px;font-weight:600;color:#e6ecf5}
+.picker .accent b,.picker .choice b{display:block;font-size:18px;font-weight:600;color:var(--tx)}
 .picker .accent span,.picker .choice span{display:block;font-size:13px;color:var(--muted);margin-top:3px}
 
 /* --- flag a bad clip / record a replacement --- */
@@ -179,14 +189,14 @@ button:focus-visible{outline:2px solid var(--amber);outline-offset:3px}
 .en{display:block;font-size:12px;color:var(--muted);font-weight:400;margin-top:3px;line-height:1.35}
 .thanks{display:block;font-size:24px;font-weight:800;color:var(--ok);margin:4px 0 8px}
 .panel .accent{background:var(--ink);border:1px solid var(--edge);border-radius:10px;
-  padding:10px 12px;color:#e6ecf5;font-size:14px}
+  padding:10px 12px;color:var(--tx);font-size:14px}
 .recbtn{width:100%;padding:16px;border-radius:12px;background:var(--amber);color:#241a00;font-weight:600;font-size:16px}
 .recbtn.live{background:var(--no);color:#2d0704;animation:pulse 1s ease-in-out infinite}
 @keyframes pulse{50%{opacity:.7}}
 #recPreview{width:100%;margin-top:12px}
 .recrow{display:flex;gap:8px;margin-top:12px}
 .recrow button{flex:1;padding:12px;border-radius:10px;border:1px solid var(--edge);font-size:15px}
-#recSend{background:#e6ecf5;color:var(--ink);border-color:#e6ecf5;font-weight:600}
+#recSend{background:var(--tx);color:var(--ink);border-color:var(--tx);font-weight:600}
 .row{display:flex;align-items:center;gap:12px;font-size:14px;color:var(--muted);margin-top:12px}
 input[type=range]{flex:1;accent-color:var(--amber)}
 .stats{margin-top:10px;font-size:14px}
@@ -197,7 +207,7 @@ input[type=range]{flex:1;accent-color:var(--amber)}
 .bar i.bad{background:var(--no)}
 .note{font-size:13px;color:var(--muted);line-height:1.55;margin-top:10px}
 .note code{background:var(--slate);padding:1px 5px;border-radius:4px;font-size:12px}
-.close{margin-top:28px;background:#e6ecf5;color:var(--ink);font-weight:600;padding:12px 0;border-radius:10px;width:100%}
+.close{margin-top:28px;background:var(--tx);color:var(--ink);font-weight:600;padding:12px 0;border-radius:10px;width:100%}
 .danger{margin-top:10px;color:var(--no);font-size:13px;padding:10px 0;width:100%;border:1px solid var(--edge);border-radius:10px}
 .loading{padding:60px 0;text-align:center;color:var(--muted)}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
@@ -211,6 +221,9 @@ input[type=range]{flex:1;accent-color:var(--amber)}
     <span>Today <b id="today">0</b></span>
     <span>Correct <b id="acc">–</b></span>
     <span class="sp"></span>
+    <button class="gear" id="themeBtn" aria-label="Light or dark theme" title="Light / dark">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><path d="M12 1.8v2.6M12 19.6v2.6M22.2 12h-2.6M4.4 12H1.8M19.4 4.6l-1.9 1.9M6.5 17.5l-1.9 1.9M19.4 19.4l-1.9-1.9M6.5 6.5L4.6 4.6"/></svg>
+    </button>
     <button class="gear" id="gear" aria-label="Settings">
       <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.6v2.3M12 19.1v2.3M21.4 12h-2.3M4.9 12H2.6M18.6 5.4l-1.6 1.6M7 17l-1.6 1.6M18.6 18.6L17 17M7 7L5.4 5.4"/></svg>
     </button>
@@ -1121,6 +1134,7 @@ $('again').onclick = replay;
 $('slow').onclick = () => { S.rate = S.rate === 1 ? 0.65 : 1; $('slow').textContent = S.rate === 1 ? 'Slower' : 'Normal'; replay(); };
 $('next').onclick = newQuestion;
 $('gear').onclick = () => { buildSheet(); paintFlags(); $('sheet').classList.add('open'); };
+$('themeBtn').onclick = () => { if(window.NgheTheme) window.NgheTheme.toggle(); };
 $('flagBtn').onclick = openReasons;
 $('flagCancel').onclick = () => $('reasons').classList.remove('open');
 $('recOpen').onclick = openRecorder;

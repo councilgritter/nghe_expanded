@@ -1,0 +1,140 @@
+name: Refresh reading articles
+
+# The password-gated "↻ Cập nhật" button in the reader triggers this workflow: the
+# browser posts a password to a small endpoint (see refresh-worker/), and the endpoint
+# — never the page — holds the token that dispatches this run.  It is also runnable by
+# hand from the Actions tab, which needs no extra infrastructure at all.
+#
+# Why it needs its own run rather than doing the work in the page: ingesting costs
+# money and needs the DeepSeek key, and neither can live in a static site.  The key is
+# a repository secret here and never reaches a browser.
+#
+# TWO THINGS THIS WORKFLOW EXISTS TO GET RIGHT:
+#
+#  1. The reading database is restored from R2 before the run and saved back after it.
+#     Ingest's dedupe ("already ingested at B1") is a row in that file, so a run with a
+#     fresh database re-simplifies every feed article and pays for all of them again.
+#     Same for the 15 MB dictionary — without it the reconciler loses its compound
+#     constraint and quality drops silently.
+#
+#  2. The off-peak guard is left in charge.  A run during DeepSeek's peak hours (double
+#     price) is refused by the pipeline itself rather than by this file, so there is one
+#     place that decides and one place to read the reason from.  Set allow_peak to
+#     override for a single run.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: What to do
+        type: choice
+        default: ingest
+        options:
+          - ingest        # fetch the feeds and simplify what is new
+          - exercises     # practice content for articles that lack it (no re-simplify)
+          - resegment     # re-apply the segmentation guards to stored articles (free)
+      level:
+        description: CEFR level
+        type: choice
+        default: B1
+        options: [A1, A2, B1, B2, C1, C2]
+      limit:
+        description: Max articles this run (a spend cap)
+        default: '5'
+      allow_peak:
+        description: Run even during DeepSeek peak hours (costs double)
+        type: boolean
+        default: false
+
+# Never two runs at once: they would race on the database and on the same bundle files.
+concurrency: reading-refresh
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: write
+    env:
+      PYTHONIOENCODING: utf-8
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      DEEPSEEK_MODEL: ${{ vars.DEEPSEEK_MODEL || 'deepseek-flash' }}
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      READING_R2_PREFIX: reading
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r reading/requirements.txt boto3
+
+      - name: Restore the reading database and dictionary
+        if: env.R2_BUCKET != ''
+        run: python -m reading.tools.r2_sync get
+
+      - name: Build the dictionary if the bucket had none
+        run: |
+          if [ -f reading/data/dictionary.sqlite3 ]; then
+            echo "dictionary restored from R2"
+          else
+            echo "no dictionary in the bucket — building it (boundaries, then glosses)"
+            python -m reading.tools.build_dictionary
+            python -m reading.tools.build_glosses
+          fi
+
+      - name: Resegment stored articles (no API calls)
+        if: inputs.mode == 'resegment'
+        run: python -m reading.tools.resegment
+
+      - name: Refresh practice content (one call per article, no re-simplify)
+        if: inputs.mode == 'exercises'
+        run: |
+          python -m reading.pipeline.ingest --refresh-exercises \
+            --cefr '${{ inputs.level }}' --limit '${{ inputs.limit }}' \
+            ${{ inputs.allow_peak && '--allow-peak' || '' }}
+
+      - name: Ingest new articles
+        if: inputs.mode == 'ingest'
+        run: |
+          python -m reading.pipeline.ingest \
+            --cefr '${{ inputs.level }}' --limit '${{ inputs.limit }}' \
+            ${{ inputs.allow_peak && '--allow-peak' || '' }}
+
+      - name: Export the static bundles
+        run: python -m reading.tools.build_site
+
+      - name: Save the database back to R2
+        if: always() && env.R2_BUCKET != ''
+        run: python -m reading.tools.r2_sync put
+
+      - name: Commit the exported bundles
+        run: |
+          git config user.name  "reading-refresh[bot]"
+          git config user.email "reading-refresh@users.noreply.github.com"
+          git add reading/data/site
+          if git diff --cached --quiet; then
+            echo "nothing changed — the run cost nothing new"
+          else
+            git commit -m "reading: refresh bundles (${{ inputs.mode }}, ${{ inputs.level }})"
+            git push
+          fi
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "### Reading refresh: ${{ inputs.mode }}"
+            echo ""
+            echo "- level: ${{ inputs.level }}, limit: ${{ inputs.limit }}"
+            echo "- bundles:"
+            ls -la reading/data/site | tail -n +2 | head -n 20
+          } >> "$GITHUB_STEP_SUMMARY"

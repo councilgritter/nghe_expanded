@@ -25,6 +25,7 @@ from pathlib import Path
 from reading.pipeline.extract import bundle_for_version, list_versions
 from reading.settings import settings as default_settings
 from reading.storage import db
+from reading.storage.dictionary import CompoundDictionary
 
 
 def export(
@@ -32,13 +33,19 @@ def export(
     out_dir: Path,
     cefr_level: str | None = None,
     source: str | None = None,
+    dictionary: CompoundDictionary | None = None,
 ) -> dict:
-    """Write every stored version to ``out_dir``.  Returns a small summary."""
+    """Write every stored version to ``out_dir``.  Returns a small summary.
+
+    ``dictionary`` is passed through to the bundle builder so each exported article
+    carries its offline lookup index.  Without it the export still succeeds — the
+    reader just cannot resolve a range the segmenter never produced as a token.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     entries: list[dict] = []
 
     for row in list_versions(conn, cefr_level=cefr_level, source=source):
-        bundle = bundle_for_version(conn, row["id"])
+        bundle = bundle_for_version(conn, row["id"], dictionary=dictionary)
         if bundle is None:
             continue
         filename = f"article-{row['article_id']}-{row['cefr_level']}.json"
@@ -48,6 +55,7 @@ def export(
         )
         article = bundle["article"]
         version = bundle["version"]
+        exercises = bundle.get("exercises") or {}
         entries.append(
             {
                 "article_id": row["article_id"],
@@ -61,6 +69,10 @@ def export(
                 "syllables": len(bundle["syllables"]),
                 "tokens": len(bundle["tokens"]),
                 "ambiguous": sum(1 for t in bundle["tokens"] if t["ambiguous"]),
+                "lookup": len(bundle.get("lookup") or []),
+                "questions": len(exercises.get("mcq") or [])
+                + len(exercises.get("short") or []),
+                "writing": bool(exercises.get("writing")),
                 "vocab": len(bundle["preteach"]["vocab"]),
                 "grammar": len(bundle["preteach"]["grammar"]),
                 "quality": version["quality"],
@@ -91,15 +103,30 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     out_dir = Path(args.out) if args.out else default_settings.site_dir
+    try:
+        dictionary = CompoundDictionary.from_sqlite(
+            default_settings.dict_path,
+            max_syllables=default_settings.max_compound_syllables,
+        )
+    except FileNotFoundError as exc:
+        # Not fatal: the bundles simply carry no lookup index, and the reader falls
+        # back to the token map alone (exactly how it behaved before the index).
+        print(f"warning: {exc}\nExporting without the offline lookup index.")
+        dictionary = None
+
     conn = db.connect(default_settings.db_path)
     db.migrate(conn)
     try:
-        summary = export(conn, out_dir, cefr_level=args.cefr, source=args.source)
+        summary = export(
+            conn, out_dir, cefr_level=args.cefr, source=args.source, dictionary=dictionary
+        )
     finally:
         conn.close()
 
     print(f"{summary['entries']} article bundles, levels: {', '.join(summary['levels']) or 'none'}")
     print(f"wrote {out_dir}")
+    if dictionary is not None:
+        print(f"lookup index built from {len(dictionary):,} dictionary headwords")
     if not summary["entries"]:
         print("nothing to export — run the ingester first:")
         print("    python -m reading.pipeline.ingest --cefr B1 --limit 5")

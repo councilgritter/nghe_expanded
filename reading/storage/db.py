@@ -127,6 +127,31 @@ def version_prompt_version(
     return row["prompt_version"] if row is not None else None
 
 
+def exercises_prompt_version(conn: sqlite3.Connection, version_id: int) -> str:
+    """Which exercises prompt produced this version's practice content.
+
+    Empty when there is none, which is what makes ``--refresh-exercises`` able to
+    find the versions that have no exercises yet as well as the stale ones.
+    """
+    row = conn.execute(
+        "SELECT exercises_prompt_version FROM article_versions WHERE id = ?",
+        (version_id,),
+    ).fetchone()
+    if row is None:
+        return ""
+    return row["exercises_prompt_version"] or ""
+
+
+def set_exercises_prompt_version(
+    conn: sqlite3.Connection, version_id: int, prompt_version: str
+) -> None:
+    conn.execute(
+        "UPDATE article_versions SET exercises_prompt_version = ? WHERE id = ?",
+        (prompt_version, version_id),
+    )
+    conn.commit()
+
+
 def insert_article(conn: sqlite3.Connection, article: ArticleRecord) -> int | None:
     """Insert an article, or return ``None`` if it was already present."""
     if article_exists(conn, article.source, article.guid):
@@ -347,6 +372,55 @@ def get_preteach(conn: sqlite3.Connection, version_id: int) -> dict[str, list[sq
     out: dict[str, list[sqlite3.Row]] = {"vocab": [], "grammar": []}
     for row in rows:
         out[row["kind"]].append(row)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Practice content: comprehension questions and the writing task
+# ---------------------------------------------------------------------------
+
+def replace_exercises(conn: sqlite3.Connection, version_id: int, items: Iterable[dict]) -> int:
+    """Write the practice content for a version, replacing whatever was there.
+
+    Regenerating exercises must never leave a half-updated mix of two prompts'
+    questions, so the delete and the insert are one unit of work.
+    """
+    conn.execute("DELETE FROM exercises WHERE version_id = ?", (version_id,))
+    rows = [
+        (
+            version_id,
+            item["kind"],
+            item.get("ordinal", 0),
+            item["prompt"],
+            json.dumps(item["options"], ensure_ascii=False) if item.get("options") else None,
+            item.get("answer"),
+            item.get("why", "") or "",
+            json.dumps(item["key_points"], ensure_ascii=False) if item.get("key_points") else None,
+            item.get("sample", "") or "",
+            item.get("min_words"),
+        )
+        for item in items
+    ]
+    conn.executemany(
+        """INSERT OR REPLACE INTO exercises
+             (version_id, kind, ordinal, prompt, options, answer, why, key_points,
+              sample, min_words)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        rows,
+    )
+    conn.commit()
+    return len(rows)
+
+
+def get_exercises(conn: sqlite3.Connection, version_id: int) -> dict[str, list[sqlite3.Row]]:
+    """Practice rows grouped by kind, in stored order."""
+    rows = conn.execute(
+        "SELECT * FROM exercises WHERE version_id = ? ORDER BY kind, ordinal",
+        (version_id,),
+    )
+    out: dict[str, list[sqlite3.Row]] = {"mcq": [], "short": [], "writing": []}
+    for row in rows:
+        out.setdefault(row["kind"], []).append(row)
     return out
 
 

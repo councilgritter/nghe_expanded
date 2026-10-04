@@ -55,6 +55,45 @@ class DefinitionResult:
     cefr: str = ""
 
 
+@dataclass
+class QuizItem:
+    """One comprehension question: multiple choice, or open with a model answer."""
+
+    question: str
+    options: list[str] = field(default_factory=list)
+    # 0-based index into ``options``; -1 when the model gave no usable answer.
+    answer: int = -1
+    why: str = ""
+    sample: str = ""
+    key_points: list[str] = field(default_factory=list)
+
+
+@dataclass
+class WritingTask:
+    prompt: str = ""
+    key_points: list[str] = field(default_factory=list)
+    model_answer: str = ""
+    min_words: int = 0
+
+
+@dataclass
+class Exercises:
+    """The practice content for one (article, level): questions plus a writing task."""
+
+    questions: list[QuizItem] = field(default_factory=list)
+    short_answers: list[QuizItem] = field(default_factory=list)
+    writing: WritingTask = field(default_factory=WritingTask)
+
+    @property
+    def count(self) -> int:
+        """How many items there are, writing task included.  Zero means "no content"."""
+        return (
+            len(self.questions)
+            + len(self.short_answers)
+            + (1 if self.writing.prompt else 0)
+        )
+
+
 class Simplifier(Protocol):
     """What the pipeline needs from an LLM.  Tests implement this."""
 
@@ -63,6 +102,8 @@ class Simplifier(Protocol):
     def define(
         self, sentence: str, selection: str, cefr_level: str | None = ...
     ) -> DefinitionResult: ...
+
+    def exercises(self, simplified_text: str, cefr_level: str) -> Exercises: ...
 
 
 def parse_json_object(raw: str) -> dict:
@@ -104,6 +145,72 @@ def _items(raw: Any) -> list[PreTeachItem]:
             )
         )
     return out
+
+
+def _string_list(raw: Any) -> list[str]:
+    """Coerce a model field into a list of non-empty strings."""
+    if isinstance(raw, str):
+        raw = [part for part in re.split(r"[;\n]", raw)]
+    if not isinstance(raw, list):
+        return []
+    return [str(item).strip() for item in raw if str(item or "").strip()]
+
+
+def _quiz_items(raw: Any, *, with_options: bool) -> list[QuizItem]:
+    """Coerce the model's question arrays into :class:`QuizItem` objects.
+
+    Tolerant on purpose: a question with fewer than two options, or an ``answer``
+    that indexes nothing, is dropped rather than stored, because the reader would
+    otherwise show a question that cannot be answered correctly.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[QuizItem] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        question = str(entry.get("q") or entry.get("question") or "").strip()
+        if not question:
+            continue
+        options = _string_list(entry.get("options"))
+        if with_options:
+            if len(options) < 2:
+                continue
+            try:
+                answer = int(entry.get("answer", -1))
+            except (TypeError, ValueError):
+                continue
+            if not 0 <= answer < len(options):
+                continue
+        else:
+            options, answer = [], -1
+        out.append(
+            QuizItem(
+                question=question,
+                options=options,
+                answer=answer,
+                why=str(entry.get("why") or "").strip(),
+                sample=str(entry.get("sample") or entry.get("model_answer") or "").strip(),
+                key_points=_string_list(entry.get("key_points")),
+            )
+        )
+    return out
+
+
+def _writing(raw: Any) -> WritingTask:
+    if not isinstance(raw, dict):
+        return WritingTask()
+    prompt = str(raw.get("prompt") or raw.get("q") or "").strip()
+    try:
+        min_words = int(raw.get("min_words") or 0)
+    except (TypeError, ValueError):
+        min_words = 0
+    return WritingTask(
+        prompt=prompt,
+        key_points=_string_list(raw.get("key_points")),
+        model_answer=str(raw.get("model_answer") or raw.get("sample") or "").strip(),
+        min_words=max(0, min_words),
+    )
 
 
 def _read_stream(response) -> tuple[str, dict]:
@@ -237,4 +344,24 @@ class DeepSeekClient:
             form=str(data.get("form") or selection).strip() or selection,
             definition=str(data.get("definition") or "").strip(),
             cefr=str(data.get("cefr") or "").strip().upper(),
+        )
+
+    def exercises(self, simplified_text: str, cefr_level: str) -> Exercises:
+        """The comprehension questions and writing task for one simplified article.
+
+        A second call rather than more output from :meth:`simplify`: the article is
+        already paid for and stored, so exercises can be added to existing articles —
+        or rewritten on their own — without re-simplifying anything.
+        """
+        level = (cefr_level or self.settings.default_cefr).upper()
+        if level not in prompts.CEFR_LEVELS:
+            raise ValueError(f"unknown CEFR level {cefr_level!r}")
+        data, _ = self._post(
+            prompts.EXERCISES_SYSTEM_PROMPT,
+            prompts.exercises_user_message(simplified_text, level),
+        )
+        return Exercises(
+            questions=_quiz_items(data.get("questions"), with_options=True),
+            short_answers=_quiz_items(data.get("short_answers"), with_options=False),
+            writing=_writing(data.get("writing")),
         )

@@ -10,7 +10,7 @@ properties — ingest does all the expensive work once, the reader does none of 
    VOA RSS ─┐
             ├─▶ dedupe ─▶ body ─▶ DeepSeek ─▶ segment ─▶ reconcile ─▶ token map ─▶ SQLite
    BBC RSS ─┘   (per        │     (1 call     (2 ways)   (dictionary    (offsets)      │
-                level)      │      per                     decides)                   │
+                level)      │      per                     decides) + guards →         │
                             │      article·level)                                      │
                             └── scrape, else RSS summary                              │
                                                                                       │
@@ -33,6 +33,14 @@ properties — ingest does all the expensive work once, the reader does none of 
                                                                              ▼
                                                                     cache locally, show
 ```
+
+Two model calls now run at ingest, and the order matters. The simplification call
+produces the article; the **practice call** comes second, takes the *simplified* text,
+and returns comprehension questions and a writing task. Separate rather than more
+output from the first call because (a) a truncated single response would lose the
+article itself, and (b) the article is already paid for and stored, so exercises can be
+added to ten stored articles later for ten small calls — `ingest --refresh-exercises` —
+instead of ten rewrites.
 
 ## Why the reader is static
 
@@ -132,9 +140,10 @@ A fixed, testable decision order:
 
 | Order | Condition | Outcome |
 |---|---|---|
-| 1 | the dictionary knows a word starting here | **locked**, source `dictionary` |
+| 1 | the dictionary knows a word starting here **and the guards allow it** | **locked**, source `dictionary` |
 | 2 | the model and underthesea propose the same span | **locked**, source `agreed` |
 | 3 | they disagree | underthesea's span becomes primary, token marked **ambiguous**, **both** readings kept as candidates |
+| 4 | a span the guards refuse (punctuation inside it, or a run of function words nothing can gloss) | **split**, source `split` |
 
 The dictionary wins because the word lists are a statement of record about Vietnamese
 compound boundaries; the model does not get to override them. On disagreement,
@@ -142,6 +151,27 @@ underthesea is primary because it is deterministic and trained on Vietnamese, an
 because biasing to the *shorter* span is the safe failure — it can never swallow a
 clause. The alternative is not discarded: it is stored, shown to the reader, and the
 expand/shrink handles act on it.
+
+**The guards are the part that took measurement to get right.** The word lists are
+corpus-derived, so "the dictionary knows it" is not the same as "it is a word": 183
+distinct multi-syllable locked spans in the stored corpus had no gloss at all, including
+`của ông`, `không phải`, `trong lúc`. Two guards narrow the lock, and both are stated
+in `reconcile.py` with the measurement that produced them:
+
+* **contiguity** — no punctuation, quote or paragraph break inside a span. The syllable
+  sequence only carries `\w+` runs, so this is checked through the `allow_span`
+  predicate that ingest builds from the text (`text.span_is_contiguous`). Digits keep
+  their separators, so `300.000` stays one token.
+* **function-word run, but only when nothing glosses it** — a run of function words the
+  dictionary can explain is a word (`trước đây`, `chúng tôi`, `tháng Một`, `vì vậy`) and
+  is kept; one it cannot explain is a phrase (`của ông`, `không phải`, `lúc nào`) and is
+  split so each word is tappable. The first version of this guard ignored the gloss
+  condition and destroyed real words — `tôi` alone leads with "slave; domestic servant"
+  — and the gloss condition is what makes it safe.
+
+Guard 1 is why `tools/resegment.py` can repair stored articles for free: the guards are
+in the reconciler, not in the model, so the stored *text* does not have to change for the
+token map to be rebuilt correctly.
 
 ### 6. Token map — `pipeline/tokens.py`
 
@@ -174,38 +204,56 @@ files and records them in `schema_migrations`. Nothing drops or recreates a tabl
 | Table | Holds |
 |---|---|
 | `articles` | one row per source article, `UNIQUE(source, guid)`, with attribution |
-| `article_versions` | one simplification per `(article, level)`, with model + prompt version + quality |
+| `article_versions` | one simplification per `(article, level)`, with model + simplification prompt version + exercises prompt version + quality |
 | `tokens` | the token map, indexed on `(version_id, start_char, end_char)`, with both definition languages |
 | `preteach` | vocabulary and grammar points, keyed by version |
+| `exercises` | comprehension questions and the writing task, keyed by version — one row per item |
 | `lookup_cache` | fallback answers, so one context is never paid for twice |
 
 `article_versions.quality` is `ok` or `syllable_mismatch`. The latter means the model's
 grouping did not line up with the text at all, so it was discarded in favour of
 underthesea alone — a visible flag rather than a silently mangled map.
 
+Two prompt versions live on a version row rather than one, because the two calls have
+different lifetimes: `prompt_version` for the simplification and
+`exercises_prompt_version` for the practice content. Changing the questions must not
+make the (far more expensive) rewrite look stale, and `--refresh-exercises` reads the
+second column to find exactly the rows that need one more small call.
+
 ## Runtime
 
 ```
-long-press / tap
+long-press / tap / drag-select
       │
       ▼
-  character offset
+  character offset(s)
       │
       ▼
- find_token_at(version, offset)   ← indexed range scan, local
+  syllable range
       │
-      ├── token with a definition ─────────────▶ highlight the compound, show the gloss
+      ├── an exact token with a definition ─────▶ highlight it, show the gloss
       │
-      ├── token without a definition
+      ├── otherwise: the exported lookup index ─▶ is (syl_start, syl_end) a
+      │                                           dictionary span? ─▶ show the gloss
+      │                                           "known, no gloss" ─▶ say so
+      │
+      ├── a token/range with no gloss anywhere
       │        └─ sentence_around(text, offset) ─▶ lookup_cache ─hit─▶ show
       │                                                  │miss
-      └── no token at that offset ──────────────────────▶ │
-                                                          ▼
-                                       POST {sentence, selection, cefr}   (optional)
-                                                          │
-                                                          ▼
-                                              cache locally, then show
+      ▼                                                  ▼
+  handles: widen/narrow by syllable        POST {sentence, selection, cefr}  (optional)
+                                                           │
+                                                           ▼
+                                                   cache locally, then show
 ```
+
+The lookup index is the piece that makes an *arbitrary* range work. The dictionary never
+reaches the browser — definitions are baked in per token — so before the index a range
+the segmenter had not produced was a dead end. `pipeline/lookup.py` is run at export
+time, where the dictionary is free to consult: every 2–6 syllable run in the article that
+the dictionary knows, with its English gloss (~450–500 spans, a few tens of kilobytes).
+The reader holds it as a `Map` keyed `"sylStart:sylEnd"`, so resolution is one lookup,
+offline, with no server and no per-tap cost.
 
 Nothing on the happy path leaves the device. `resolve_offset(..., allow_llm=False)`
 returns the purely-local answer, which is what the UI asks for first; only an empty
@@ -219,45 +267,80 @@ the answer is keyed by a hash of `(sentence, selection)` so repeat taps are free
 | Work | Frequency | Cost |
 |---|---|---|
 | simplification + segmentation | once per (article, level) | 1 model call |
+| comprehension questions + writing task | once per (article, level) | 1 shorter call (skippable: `--no-exercises`) |
 | segmentation, reconciliation, token map | once per (article, level) | local |
 | English glosses for the token map | once, from the local dictionary | free |
 | Vietnamese glosses for the token map | once, reusing that same call's output | free |
+| the offline lookup index | once, at export | free (local dictionary) |
+| practice content for an article already ingested | per `--refresh-exercises` run | 1 short call |
+| re-segmenting a stored article after a guard change | per `tools/resegment.py` run | **free — no call at all** |
 | an item too short to be a reading exercise | once | **no call — skipped first** |
-| a tap with a stored definition | every tap | free |
-| a tap with no stored definition | rare, then cached | 1 short call |
+| a tap with a stored definition, or a range in the lookup index | every tap | free |
+| a tap with no stored definition anywhere | rare, then cached | 1 short call |
 
 Prompt caching is designed in: system prompts are constants, variable content follows.
 
-Nothing runs on a schedule. There is no cron, no workflow and no trigger in the app: the
-three paid-relevant steps — `build_glosses`, `ingest`, `build_site` — are commands a
-human types, and opening the reader only fetches a committed bundle. That is deliberate,
-given the off-peak guard exists precisely because a run costs money.
+The practice call is the one that changes the arithmetic: it doubles the number of calls
+per article but costs far less than the rewrite, because it reads the finished simplified
+text and writes no article. It is also the reason a prompt change to the questions costs
+ten small calls rather than ten rewrites.
 
-## Phase 2 (deliberately not built)
+Nothing runs on a schedule. There is no cron and no timer in the app: the paid-relevant
+steps — `build_glosses`, `ingest`, `build_site` — are commands a human types, and opening
+the reader only fetches a committed bundle. The one button that can spend money is the
+reader's **↻ Cập nhật**, which is off until `REFRESH_ENDPOINT` is set, asks for a
+password, and dispatches *the same command* on GitHub Actions — where the key lives and
+where the off-peak guard still refuses a peak-hour run. That keeps the property this
+section is about: no page load, and no schedule, ever spends a token by itself.
 
-The HTTP wrapper for the disambiguation fallback, and a re-ingest trigger. The logic
-already exists and is tested — `pipeline/resolve.py` for the fallback, `ingest.py`'s
-`run_ingest` for the trigger — so phase 2 is a transport layer over working code, not a
-second implementation. `storage/db.py` is written as free functions over a connection
-rather than an ORM, so it does not need to change either.
+## Phase 2 — one of the two is now built
+
+`refresh-worker/` and `.github/workflows/reading-refresh.yml` are the re-ingest trigger:
+the Worker holds the GitHub token and the password, the workflow holds the DeepSeek key
+and runs the same CLI a human would. That is a transport layer over `run_ingest`, exactly
+as planned — no second implementation.
+
+Still unbuilt, and still deliberately so: **the HTTP wrapper for the disambiguation
+fallback**. `pipeline/resolve.py` implements the one-sentence lookup and is unit-tested,
+and `web/reader.js` already POSTs to a configurable `DISAMBIGUATE_ENDPOINT`. The lookup
+index means it fires far less often than it used to, which is the argument for leaving it
+alone until something actually needs it. The same Worker is the natural home for it.
+
+## Phase 2 — one of the two is now built
+
+`refresh-worker/` and `.github/workflows/reading-refresh.yml` are the re-ingest trigger:
+the Worker holds the GitHub token and the password, the workflow holds the DeepSeek key
+and runs the same CLI a human would. That is a transport layer over `run_ingest`, exactly
+as planned — not a second implementation.
+
+Still unbuilt, and still deliberately so: **the HTTP wrapper for the disambiguation
+fallback**. `pipeline/resolve.py` implements the one-sentence lookup and is unit-tested,
+and `web/reader.js` already POSTs to a configurable `DISAMBIGUATE_ENDPOINT`. The lookup
+index means it fires far less often than it used to, which is the argument for leaving it
+alone until something actually needs it. The same Worker is the natural home for it.
 
 ## Testing
 
-`251 tests`. The reconciler and token-map builder are unit-tested against hand-written
+`301 tests`. The reconciler and token-map builder are unit-tested against hand-written
 segmentations, because their invariants (spans tile the syllables; offsets address the
 exact substring) are what the reader depends on. One integration test drives the whole
 pipeline over a fixture article with DeepSeek stubbed, so the pipeline's own logic is
 under test rather than the model's.
 
-Three files exist because a bug got through without them. `test_fetch_full.py` covers
+Four files exist because a bug got through without them. `test_fetch_full.py` covers
 the container-scoring shapes that actually occur (per-paragraph wrappers, navigation
 furniture, link farms, pages with no prose at all); `test_glosses.py` pins the ordering
 rules that decide which English sense a tap shows first, against hand-written records
 rather than the 79 MB source; `test_deepseek.py` covers the streamed-response reader
 against canned SSE frames — the path every article now takes, and the one where
 reasoning text leaking into the article, or usage going unreported, would be invisible.
-`test_text.py` covers paragraph preservation and the rewrite-change measurement, which
-the reader and the quality guard depend on.
+`test_text.py` covers paragraph preservation, the rewrite-change measurement and the
+contiguity guard, which the reader and the quality guard depend on.
+
+The guard tests are the ones that carry a measurement rather than an intention:
+`test_reconcile.py` pins that a glossed run of function words (`trước đây`, `chúng tôi`)
+is still one word while an unglossed one (`của ông`) is not, because the first version of
+that rule failed exactly there and the corpus was the only thing that showed it.
 
 The suite uses the installed `underthesea` model but no network: RSS, article and page
 fixtures are saved files. That is why the module's tests still mean something on a day

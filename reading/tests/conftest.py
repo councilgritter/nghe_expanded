@@ -17,7 +17,14 @@ MODULE_DIR = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from reading.pipeline.deepseek import DefinitionResult, PreTeachItem, SimplifyResult  # noqa: E402
+from reading.pipeline.deepseek import (  # noqa: E402
+    DefinitionResult,
+    Exercises,
+    PreTeachItem,
+    QuizItem,
+    SimplifyResult,
+    WritingTask,
+)
 from reading.pipeline.sources import RawArticle  # noqa: E402
 from reading.storage import db  # noqa: E402
 from reading.storage.dictionary import CompoundDictionary, DictEntry, normalize_syllable  # noqa: E402
@@ -114,6 +121,32 @@ class StubSimplifier:
         self.definition = definition
         self.simplify_calls: list[tuple[str, str]] = []
         self.define_calls: list[tuple[str, str, str | None]] = []
+        self.exercise_calls: list[tuple[str, str]] = []
+        # What the exercises call returns.  Canned rather than fixture-driven: the
+        # fixture is about the *article*, and a test can replace this outright.
+        self.exercise_result = Exercises(
+            questions=[
+                QuizItem(
+                    question="Chuyện gì đã xảy ra?",
+                    options=["A", "B", "C", "D"],
+                    answer=1,
+                    why="Đoạn đầu nói vậy.",
+                )
+            ],
+            short_answers=[
+                QuizItem(
+                    question="Vì sao?",
+                    sample="Vì trời mưa.",
+                    key_points=["trời mưa"],
+                )
+            ],
+            writing=WritingTask(
+                prompt="Tóm tắt bài trong ba câu.",
+                key_points=["ý một", "ý hai"],
+                model_answer="Bài này nói về…",
+                min_words=40,
+            ),
+        )
 
     @classmethod
     def from_fixture(cls, fixture_json: dict, **kwargs) -> "StubSimplifier":
@@ -141,6 +174,10 @@ class StubSimplifier:
             definition=self.definition or f"nghĩa của {selection}",
             cefr="A2",
         )
+
+    def exercises(self, simplified_text: str, cefr_level: str) -> Exercises:
+        self.exercise_calls.append((simplified_text, cefr_level))
+        return self.exercise_result
 
 
 @pytest.fixture

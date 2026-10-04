@@ -22,7 +22,7 @@ import difflib
 import re
 import unicodedata
 from dataclasses import dataclass
-from typing import Iterable, Sequence
+from typing import Callable, Iterable, Sequence
 
 UNDERSCORE = "_"
 _WS_RE = re.compile(r"\s+")
@@ -187,3 +187,52 @@ def check_grouping(counts: Sequence[int], syllables: Sequence[Syllable], label: 
 def slice_text(text: str, syllables: Sequence[Syllable], start: int, end: int) -> str:
     """The exact substring spanning syllables ``[start, end)``."""
     return text[syllables[start].start : syllables[end - 1].end]
+
+
+# A gap that is part of a *number*, not punctuation between two words: 300.000,
+# 1/7/2025, 3-4.  The syllable sequence splits these into digit runs, so the guard
+# has to let them back through or a price gets tappable as two tokens.
+_NUMBER_SEPARATORS = ".,/:-–"
+
+
+def span_is_contiguous(
+    text: str, syllables: Sequence[Syllable], start: int, end: int
+) -> bool:
+    """True when syllables ``[start, end)`` are adjacent words in a single sentence.
+
+    :func:`syllables_with_offsets` keeps only ``\\w+`` runs, so punctuation,
+    paragraph breaks and double spaces are *not* in the syllable sequence at all.
+    That means a span of two or more syllables can silently straddle a full stop or
+    a blank line, and the token map then slices ``text[start_char:end_char]`` and
+    produces a "word" like ``BBC.\\n\\nÔng`` — tapped as one unit, defined as
+    nothing, and rendered as a broken span.
+
+    Every multi-syllable span therefore has to be contiguous: exactly one space
+    between consecutive syllables, nothing else — except a separator *inside a
+    number*, where both sides are digits.  This is the guard that makes that
+    checkable, and it is the reason the reconciler takes an ``allow_span`` predicate
+    rather than assuming the two coordinate systems line up.
+    """
+    if end - start < 2:
+        return True
+    for i in range(start, end - 1):
+        left, right = syllables[i], syllables[i + 1]
+        gap = text[left.end : right.start]
+        if gap == " ":
+            continue
+        if (
+            len(gap) == 1
+            and gap in _NUMBER_SEPARATORS
+            and left.text.isdigit()
+            and right.text.isdigit()
+        ):
+            continue
+        return False
+    return True
+
+
+def contiguous_predicate(
+    text: str, syllables: Sequence[Syllable]
+) -> "Callable[[int, int], bool]":
+    """An ``allow_span`` predicate bound to one text and syllable sequence."""
+    return lambda start, end: span_is_contiguous(text, syllables, start, end)

@@ -25,12 +25,14 @@ from pathlib import Path
 from reading.pipeline import offpeak, prompts, sources
 from reading.pipeline.deepseek import DeepSeekClient, DeepSeekError, Simplifier
 from reading.pipeline.fetch_full import fetch_body, polite_delay
+from reading.pipeline.exercises import exercises_rows
 from reading.pipeline.reconcile import ReconcileStats, reconcile, summarize
 from reading.pipeline.segment import segment_with_underthesea
 from reading.pipeline.sources import RawArticle
 from reading.pipeline.text import (
     GroupingError,
     check_grouping,
+    contiguous_predicate,
     counts_to_spans,
     grouping_from_underscores,
     syllables_with_offsets,
@@ -65,6 +67,8 @@ class ArticleResult:
     reason: str = ""
     # Share of the source's words the rewrite changed.  A transcription scores ~0.
     change_ratio: float = 0.0
+    # Practice rows stored (comprehension questions + the writing task).
+    exercises: int = 0
     # Token usage DeepSeek reported for this article's one call, so the real cost
     # is visible rather than estimated.
     usage: dict = field(default_factory=dict)
@@ -110,6 +114,7 @@ def ingest_article(
     cfg: Settings | None = None,
     refresh: bool = False,
     refetch_body: bool = False,
+    generate_exercises: bool = True,
 ) -> ArticleResult:
     """Run one article end to end and persist it.
 
@@ -213,8 +218,14 @@ def ingest_article(
         llm_spans = uts_spans
 
     # 4. Reconcile: dictionary first, then agreement, else keep both readings.
+    #    `allow_span` is the punctuation guard: syllables carry no punctuation, so a
+    #    span of two words can otherwise straddle a full stop or a paragraph break.
     spans = reconcile(
-        [s.text for s in syllables], uts_spans, llm_spans, dictionary=dictionary
+        [s.text for s in syllables],
+        uts_spans,
+        llm_spans,
+        dictionary=dictionary,
+        allow_span=contiguous_predicate(plain, syllables),
     )
     stats = summarize(spans)
 
@@ -286,7 +297,46 @@ def ingest_article(
     result.reconcile = stats
     result.change_ratio = change_ratio
     result.usage = simplification.usage or {}
+
+    # 7. Practice content, in its own call, *after* the article is committed.  A
+    #    failure here leaves a perfectly usable article behind, and --refresh-exercises
+    #    can pick the pair up later without paying for the simplification again.
+    if generate_exercises:
+        result.exercises = generate_exercise_rows(conn, version_id, plain, level, client, result)
     return result
+
+
+def generate_exercise_rows(
+    conn,
+    version_id: int,
+    text: str,
+    cefr_level: str,
+    client: Simplifier,
+    result: ArticleResult | None = None,
+) -> int:
+    """Ask the model for the practice content and store it.  Returns rows written.
+
+    ``client`` is duck-typed on purpose: a simplifier that cannot write exercises
+    (a stub, or an older client) simply leaves the version without any, and the
+    reader shows no practice section.
+    """
+    write = getattr(client, "exercises", None)
+    if write is None:
+        return 0
+    try:
+        exercises = write(text, cefr_level)
+    except Exception as exc:  # noqa: BLE001 - recorded, never fatal to the article
+        if result is not None:
+            result.reason += f"exercises failed: {exc}; "
+        return 0
+    rows = exercises_rows(exercises)
+    if not rows:
+        if result is not None:
+            result.reason += "exercises came back empty; "
+        return 0
+    db.replace_exercises(conn, version_id, rows)
+    db.set_exercises_prompt_version(conn, version_id, prompts.EXERCISES_PROMPT_VERSION)
+    return len(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -305,6 +355,7 @@ def run_ingest(
     refresh: bool = False,
     refetch_body: bool = False,
     refresh_outdated: bool = False,
+    generate_exercises: bool = True,
 ) -> RunStats:
     """Fetch feeds (unless ``articles`` is given) and ingest what is new."""
     import httpx
@@ -356,6 +407,7 @@ def run_ingest(
             result = ingest_article(
                 conn, raw, cefr_level, client, dictionary, cfg,
                 refresh=refresh, refetch_body=refetch_body,
+                generate_exercises=generate_exercises,
             )
         except Exception as exc:  # noqa: BLE001 - one article never kills the run
             result = ArticleResult(
@@ -373,6 +425,89 @@ def run_ingest(
     return stats
 
 
+# ---------------------------------------------------------------------------
+# Practice content on its own: the cheap way to add exercises to stored articles
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ExerciseRefresh:
+    """What one ``--refresh-exercises`` run did."""
+
+    refreshed: int = 0
+    skipped: int = 0
+    failed: int = 0
+    rows: int = 0
+    results: list[ArticleResult] = field(default_factory=list)
+
+
+def run_exercise_refresh(
+    conn,
+    client: Simplifier,
+    cefr_level: str | None = None,
+    limit: int | None = None,
+    force: bool = False,
+    verbose: bool = True,
+) -> ExerciseRefresh:
+    """Generate practice content for stored versions, without re-simplifying.
+
+    This exists because exercises are a *separate* call: the article is already paid
+    for, so adding questions to ten stored articles costs ten small calls instead of
+    ten rewrites.  Stored articles that already carry the current exercises prompt are
+    skipped unless ``force`` is set, which is what makes a re-run free.
+    """
+    sql = """
+        SELECT v.id AS version_id, v.cefr_level, v.simplified_text,
+               v.exercises_prompt_version, a.title, a.source
+          FROM article_versions v
+          JOIN articles a ON a.id = v.article_id
+         WHERE 1 = 1
+    """
+    params: list[object] = []
+    if cefr_level:
+        sql += " AND v.cefr_level = ?"
+        params.append(cefr_level.upper())
+    sql += " ORDER BY v.cefr_level, v.id"
+    rows = list(conn.execute(sql, params))
+
+    stats = ExerciseRefresh()
+    todo = [
+        row
+        for row in rows
+        if force or (row["exercises_prompt_version"] or "") != prompts.EXERCISES_PROMPT_VERSION
+    ]
+    stats.skipped = len(rows) - len(todo)
+    if limit:
+        todo = todo[:limit]
+
+    if verbose:
+        print(f"{len(rows)} stored versions, {len(todo)} need exercises")
+    for index, row in enumerate(todo, start=1):
+        if verbose:
+            print(f"[{index}/{len(todo)}] {row['cefr_level']} {row['title'][:70]}")
+        result = ArticleResult(
+            source=row["source"], title=row["title"], status="ingested"
+        )
+        written = generate_exercise_rows(
+            conn,
+            int(row["version_id"]),
+            row["simplified_text"],
+            row["cefr_level"],
+            client,
+            result,
+        )
+        stats.results.append(result)
+        if written:
+            stats.refreshed += 1
+            stats.rows += written
+            if verbose:
+                print(f"    practice: {written} exercises stored")
+        else:
+            stats.failed += 1
+            if verbose:
+                print(f"    failed: {result.reason or 'no exercises returned'}")
+    return stats
+
+
 def _print_result(result: ArticleResult) -> None:
     if result.status == "ingested":
         stats = result.reconcile
@@ -382,9 +517,13 @@ def _print_result(result: ArticleResult) -> None:
             if stats
             else f"{result.tokens} tokens"
         )
+        if stats and stats.split_by_guard:
+            detail += f", {stats.split_by_guard} split by guard"
         flag = "" if result.quality == QUALITY_OK else f"  [{result.quality}]"
         print(f"    ingested: {detail}{flag}")
         print(f"    rewrite:  {result.change_ratio:.0%} of words changed")
+        if result.exercises:
+            print(f"    practice: {result.exercises} exercises stored")
         spent = usage_line(result.usage)
         if spent:
             print(f"    cost: {spent}")
@@ -452,7 +591,8 @@ def _open_dictionary(cfg: Settings, required: bool) -> CompoundDictionary | None
         return None
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The command line, split out of :func:`main` so each half stays readable."""
     parser = argparse.ArgumentParser(
         prog="python -m reading.pipeline.ingest",
         description="Ingest Vietnamese news articles for reading practice.",
@@ -476,20 +616,77 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--refetch-body", action="store_true",
                         help="re-scrape article pages for articles already stored "
                              "(after an extraction fix) instead of reusing the body")
+    parser.add_argument("--no-exercises", action="store_true",
+                        help="skip the comprehension/writing call (cheaper ingest)")
+    parser.add_argument("--refresh-exercises", action="store_true",
+                        help="generate practice content for stored articles whose "
+                             "exercises are missing or stale — no re-simplification, "
+                             "and this is the whole run (nothing is fetched)")
+    parser.add_argument("--force-exercises", action="store_true",
+                        help="with --refresh-exercises: regenerate even the current ones")
     parser.add_argument("--allow-peak", action="store_true",
                         help="run even during DeepSeek's peak hours (costs double)")
     parser.add_argument("--list", action="store_true", help="list stored articles and exit")
-    args = parser.parse_args(argv)
+    return parser
 
-    cfg = default_settings
+
+def _config_from_args(args) -> Settings:
+    """Apply the two path/behaviour overrides the CLI offers."""
+    from dataclasses import replace
+
+    cfg: Settings = default_settings
     if args.db:
-        from dataclasses import replace
-
         cfg = replace(cfg, db_path=Path(args.db))
     if args.no_fetch_full:
-        from dataclasses import replace
-
         cfg = replace(cfg, fetch_full_text=False)
+    return cfg
+
+
+def _list_articles(conn, source: str | None) -> int:
+    rows = db.list_articles(conn, source=source)
+    if not rows:
+        print("No articles stored yet.")
+        return 0
+    for row in rows:
+        print(f"  [{row['id']:>4}] {row['source']:<4} {row['title'][:70]}")
+    print(f"\n{len(rows)} articles")
+    return 0
+
+
+def _offpeak_refusal(cfg: Settings, allow_peak: bool) -> str | None:
+    """Print the pricing line; return the refusal text when the run must not start.
+
+    Ingest spends money, so it will not start during DeepSeek's peak hours (double
+    price) without explicit approval.  Reading the feeds is cheap but it is gated too,
+    so a scheduled run is either wholly inside the window or a no-op.
+    """
+    policy = cfg.peak_policy()
+    now = datetime.now(timezone.utc)
+    allowed, refusal = offpeak.check(policy, now, allow_peak=allow_peak)
+    print(f"Pricing: {offpeak.status_line(policy, now)}")
+    return None if allowed else refusal
+
+
+def _run_exercises_only(conn, client: Simplifier, args) -> int:
+    """Practice content for stored articles: no feeds, no simplification, no rewrite."""
+    refresh = run_exercise_refresh(
+        conn,
+        client,
+        cefr_level=args.cefr if args.cefr else None,
+        limit=args.limit,
+        force=args.force_exercises,
+    )
+    print(
+        f"\n{refresh.refreshed} versions given practice content "
+        f"({refresh.rows} rows), {refresh.skipped} already current, "
+        f"{refresh.failed} failed"
+    )
+    return 1 if refresh.failed and not refresh.refreshed else 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    cfg = _config_from_args(args)
 
     conn = db.connect(cfg.db_path)
     applied = db.migrate(conn)
@@ -497,29 +694,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Applied migrations: {', '.join(applied)}")
 
     if args.list:
-        rows = db.list_articles(conn, source=args.source)
-        if not rows:
-            print("No articles stored yet.")
-            return 0
-        for row in rows:
-            print(f"  [{row['id']:>4}] {row['source']:<4} {row['title'][:70]}")
-        print(f"\n{len(rows)} articles")
-        return 0
+        return _list_articles(conn, args.source)
 
     dictionary = None if args.no_dictionary else _open_dictionary(cfg, required=False)
     if dictionary is not None:
         print(f"Dictionary: {len(dictionary):,} headwords (<= {dictionary.max_syllables} syllables)")
 
-    # Off-peak guard.  Ingest spends money, so it will not start during DeepSeek's
-    # peak hours without explicit approval.  Reading the feeds is cheap but it is
-    # gated too, so a scheduled run is either wholly inside the window or a no-op.
-    policy = cfg.peak_policy()
-    now = datetime.now(timezone.utc)
-    allowed, refusal = offpeak.check(
-        policy, now, allow_peak=args.allow_peak or cfg.allow_peak
-    )
-    print(f"Pricing: {offpeak.status_line(policy, now)}")
-    if not allowed:
+    refusal = _offpeak_refusal(cfg, args.allow_peak or cfg.allow_peak)
+    if refusal:
         print("\n" + refusal)
         return 2
 
@@ -528,6 +710,11 @@ def main(argv: list[str] | None = None) -> int:
         articles = [a for a in sources.fetch_all(cfg) if a.source == args.source]
 
     client = DeepSeekClient(cfg)
+
+    # Exercises-only mode still spends money, so it sits behind the same guard above.
+    if args.refresh_exercises:
+        return _run_exercises_only(conn, client, args)
+
     stats = run_ingest(
         conn,
         cefr_level=args.cefr,
@@ -539,6 +726,7 @@ def main(argv: list[str] | None = None) -> int:
         refresh=args.refresh,
         refetch_body=args.refetch_body,
         refresh_outdated=args.refresh_outdated,
+        generate_exercises=not args.no_exercises,
     )
     skipped = sum(1 for r in stats.results if r.status == "skipped")
     print(

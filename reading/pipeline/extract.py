@@ -6,8 +6,12 @@ the optional API layer without either of them depending on the exporter.
 """
 from __future__ import annotations
 
+import json
+
+from reading.pipeline.lookup import build_lookup_index
 from reading.pipeline.text import syllables_with_offsets
 from reading.storage import db
+from reading.storage.dictionary import CompoundDictionary
 
 
 def list_versions(conn, cefr_level: str | None = None, source: str | None = None):
@@ -30,8 +34,15 @@ def list_versions(conn, cefr_level: str | None = None, source: str | None = None
     return list(conn.execute(sql, params))
 
 
-def bundle_for_version(conn, version_id: int) -> dict | None:
-    """Everything the reading page needs for one (article, level) pair."""
+def bundle_for_version(
+    conn, version_id: int, dictionary: CompoundDictionary | None = None
+) -> dict | None:
+    """Everything the reading page needs for one (article, level) pair.
+
+    ``dictionary`` is optional but strongly recommended: with it the bundle carries
+    the offline lookup index, which is what lets the reader resolve a range of words
+    the segmenter did not produce as a token (see ``pipeline/lookup.py``).
+    """
     row = conn.execute(
         """SELECT v.*, a.source, a.guid, a.source_url, a.title, a.author,
                   a.published_at, a.fetched_at, a.attribution, a.body_source
@@ -48,6 +59,7 @@ def bundle_for_version(conn, version_id: int) -> dict | None:
     tokens = [dict(token) for token in db.get_tokens(conn, version_id)]
     _attach_syllable_indices(tokens, syllables)
     preteach = db.get_preteach(conn, version_id)
+    exercises = db.get_exercises(conn, version_id)
 
     return {
         "article": {
@@ -95,11 +107,52 @@ def bundle_for_version(conn, version_id: int) -> dict | None:
             for token in tokens
         ],
         "syllables": [{"s": s.start, "e": s.end, "t": s.text} for s in syllables],
+        # Every dictionary span inside this article, so a highlighted range resolves
+        # offline.  Empty when no dictionary was available at export time.
+        "lookup": build_lookup_index(syllables, dictionary),
         "preteach": {
             "vocab": [_preteach_row(r) for r in preteach["vocab"]],
             "grammar": [_preteach_row(r) for r in preteach["grammar"]],
         },
+        "exercises": _exercises(exercises),
     }
+
+
+def _exercises(rows: dict) -> dict:
+    """The practice content, in the shape the reader renders.
+
+    An older bundle (or an article whose exercises have not been generated yet) has
+    no rows at all, and the page simply shows no practice section.
+    """
+    mcq = [
+        {
+            "q": row["prompt"],
+            "options": _load_candidates(row["options"]) or [],
+            "answer": row["answer"],
+            "why": row["why"] or "",
+        }
+        for row in rows.get("mcq", [])
+    ]
+    short = [
+        {
+            "q": row["prompt"],
+            "sample": row["sample"] or "",
+            "key_points": _load_candidates(row["key_points"]) or [],
+        }
+        for row in rows.get("short", [])
+    ]
+    writing_row = (rows.get("writing") or [None])[0]
+    writing = None
+    if writing_row is not None and writing_row["prompt"]:
+        writing = {
+            "prompt": writing_row["prompt"],
+            "key_points": _load_candidates(writing_row["key_points"]) or [],
+            "model_answer": writing_row["sample"] or "",
+            "min_words": writing_row["min_words"] or 0,
+        }
+    if not mcq and not short and writing is None:
+        return {}
+    return {"mcq": mcq, "short": short, "writing": writing}
 
 
 def _attach_syllable_indices(tokens: list[dict], syllables) -> None:

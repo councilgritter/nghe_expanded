@@ -10,6 +10,10 @@ every generated row so a prompt change is visible in the data.
 from __future__ import annotations
 
 PROMPT_VERSION = "reading-v3"
+# The practice content has its own prompt and its own version tag, so adding or
+# changing exercises does not invalidate the (much more expensive) simplification
+# already paid for.  Stored per version as article_versions.exercises_prompt_version.
+EXERCISES_PROMPT_VERSION = "exercises-v1"
 
 CEFR_LEVELS = ("A1", "A2", "B1", "B2", "C1", "C2")
 
@@ -128,3 +132,74 @@ Reply with exactly:
 def definition_user_message(sentence: str, selection: str, cefr_level: str | None = None) -> str:
     level = f"Reader's CEFR level: {cefr_level}\n" if cefr_level else ""
     return f"{level}SENTENCE:\n{sentence}\n\nSELECTION:\n{selection}"
+
+
+# ---------------------------------------------------------------------------
+# Practice content: comprehension questions and a writing task, built from the
+# *simplified* text — a second, cheaper call rather than more output from the
+# simplification call.  Asking one call for the article, the pre-teach list and the
+# exercises risks a truncated response that loses the article; asking a second time,
+# with the finished text as input, keeps the two failure modes apart.
+# ---------------------------------------------------------------------------
+EXERCISES_SYSTEM_PROMPT = """You write the practice material for a Vietnamese \
+reading-practice app. You receive one simplified Vietnamese article at a stated CEFR \
+level, and you write comprehension checks and one writing task about it.
+
+You always reply with a single JSON object and nothing else. No prose, no markdown \
+fences.
+
+1. `questions` — 4 multiple-choice comprehension questions in Vietnamese.
+   - Each has exactly 4 options and exactly one correct answer.
+   - `answer` is the 0-based index of the correct option.
+   - `why` explains the answer in one Vietnamese sentence, and where a distractor is
+     close, says why it is wrong.
+   - Every question must be answerable from the article text alone: no outside
+     knowledge, no detail the article does not state, no asking the reader to guess.
+   - Take them in order of difficulty and make at least one of them require a
+     relation (a cause, a contrast, a sequence), not just a fact lookup.
+   - Distractors must be plausible to someone who read carelessly — a wrong number,
+     the wrong person, a reversed relation — never obviously silly.
+2. `short_answers` — 1-3 open questions that ask the reader to explain or summarise
+   in their own words. `sample` is a model answer in Vietnamese, 1-2 sentences at the
+   target level; `key_points` lists the facts an answer must contain to be right.
+3. `writing` — one writing task that uses the article as material:
+   - `prompt` is the task in Vietnamese, at the target level: a short summary, or a
+     position the reader has to support with the article's facts.
+   - `key_points` is 3-5 facts from the article the answer has to use.
+   - `model_answer` is a model answer in Vietnamese, 3-6 sentences, at the target level.
+   - `min_words` is a sensible minimum for the level (about 40 at A2, 60 at B1, 90 at B2).
+4. Everything must be checkable against the article you were given. Never introduce a
+   fact, a name or a number that is not in it. Write Vietnamese with the diacritics.
+
+## Output
+
+Reply with exactly this JSON shape:
+
+{
+  "questions": [
+    {"q": "...", "options": ["...", "...", "...", "..."], "answer": 0,
+     "why": "..."}
+  ],
+  "short_answers": [
+    {"q": "...", "sample": "...", "key_points": ["...", "..."]}
+  ],
+  "writing": {
+    "prompt": "...",
+    "key_points": ["...", "...", "..."],
+    "model_answer": "...",
+    "min_words": 60
+  }
+}"""
+
+
+def exercises_user_message(simplified_text: str, cefr_level: str) -> str:
+    """Variable half of the exercises call — always after the fixed system prompt.
+
+    The *simplified* text is the input, not the source article: the questions have to
+    be answerable from what the learner actually reads.
+    """
+    return (
+        f"Target CEFR level: {cefr_level}\n"
+        f"Article language: Vietnamese\n\n"
+        f"SIMPLIFIED ARTICLE:\n{simplified_text}"
+    )

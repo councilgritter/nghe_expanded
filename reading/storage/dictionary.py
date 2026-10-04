@@ -161,20 +161,6 @@ class CompoundDictionary:
 
     # -- the constraint the reconciler uses ---------------------------------
 
-    def longest_match(self, syllables: list[str], start: int) -> int:
-        """Length in syllables of the longest dictionary word at ``start``.
-
-        Returns 1 when nothing matches (a bare syllable is always a valid span).
-        """
-        limit = min(self.max_syllables, len(syllables) - start)
-        for length in range(limit, 1, -1):
-            candidate = UNDERSCORE.join(
-                normalize_syllable(s) for s in syllables[start : start + length]
-            )
-            if candidate in self._entries:
-                return length
-        return 1
-
     def is_known_compound(self, syllables: list[str]) -> bool:
         """True when the whole run is a single dictionary word."""
         if len(syllables) < 2 or len(syllables) > self.max_syllables:
