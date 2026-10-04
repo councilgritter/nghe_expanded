@@ -13,7 +13,7 @@ PROMPT_VERSION = "reading-v3"
 # The practice content has its own prompt and its own version tag, so adding or
 # changing exercises does not invalidate the (much more expensive) simplification
 # already paid for.  Stored per version as article_versions.exercises_prompt_version.
-EXERCISES_PROMPT_VERSION = "exercises-v1"
+EXERCISES_PROMPT_VERSION = "exercises-v2"
 
 CEFR_LEVELS = ("A1", "A2", "B1", "B2", "C1", "C2")
 
@@ -159,6 +159,13 @@ fences.
      relation (a cause, a contrast, a sequence), not just a fact lookup.
    - Distractors must be plausible to someone who read carelessly — a wrong number,
      the wrong person, a reversed relation — never obviously silly.
+   - **Vary where the correct answer sits.** Do not put it first as a habit; the four
+     questions must not share one position. (The app permutes the options afterwards
+     anyway, but a question written as "the right one first, distractors after" is
+     usually a question whose distractors were an afterthought.)
+   - An option must stand alone. Never write an option that refers to another one by
+     letter or position ("cả A và B", "tất cả các ý trên", "both of the above") — the
+     app shuffles options, and such an option would become nonsense.
 2. `short_answers` — 1-3 open questions that ask the reader to explain or summarise
    in their own words. `sample` is a model answer in Vietnamese, 1-2 sentences at the
    target level; `key_points` lists the facts an answer must contain to be right.

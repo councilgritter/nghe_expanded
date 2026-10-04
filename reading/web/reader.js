@@ -281,12 +281,23 @@ async function openArticle(file){
   S.bundle = await r.json();
   S.sel = null;
   S.lookup = new Map((S.bundle.lookup || []).map(e => [e.s + ':' + e.e, e]));
-  S.quizKey = QUIZ_PREFIX + S.bundle.version.id;
+  // The stored answer is only meaningful against the options it was given, and the
+  // options are permuted at export. The key carries a fingerprint of the question set
+  // so a changed set starts fresh instead of marking the wrong option as chosen.
+  S.quizKey = QUIZ_PREFIX + S.bundle.version.id + '.' + exercisesFingerprint(S.bundle.exercises);
   S.writeKey = WRITE_PREFIX + S.bundle.version.id;
   try { S.quiz = JSON.parse(localStorage.getItem(S.quizKey) || '{}'); } catch { S.quiz = {}; }
   try { S.writing = localStorage.getItem(S.writeKey) || ''; } catch { S.writing = ''; }
   closeSheet();
   renderReader();
+}
+
+/* A short fingerprint of the questions: positions and options both matter, because
+   both are what a stored answer index refers to. */
+function exercisesFingerprint(exercises){
+  const mcq = (exercises && exercises.mcq) || [];
+  if (!mcq.length) return 'none';
+  return hash(mcq.map(q => q.q + '|' + (q.options || []).join('|')).join('\n'));
 }
 
 /* ---------- rendering ---------- */

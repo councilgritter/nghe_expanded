@@ -7,6 +7,7 @@ that re-pays only for the versions whose exercises are missing or stale.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 
 from reading.pipeline import prompts
@@ -17,7 +18,7 @@ from reading.pipeline.deepseek import (
     _quiz_items,
     _writing,
 )
-from reading.pipeline.exercises import exercises_rows
+from reading.pipeline.exercises import exercises_rows, order_options
 from reading.pipeline.extract import bundle_for_version
 from reading.pipeline.ingest import generate_exercise_rows, run_exercise_refresh, run_ingest
 from reading.settings import settings
@@ -38,6 +39,122 @@ def run(conn, raw_article, stub, dictionary, **kwargs):
         verbose=False,
         **kwargs,
     )
+
+
+class TestOrdering:
+    """The correct answer must not always be A.
+
+    Measured over the first 40 generated questions, 34 had the answer at A — the model
+    anchors on the first option, and the prompt's own example showed `"answer": 0`.
+    The options are therefore put in a content-determined order at storage time.
+    """
+
+    def test_the_same_question_always_gets_the_same_order(self):
+        options = ["a", "b", "c", "d"]
+        first = order_options("Chuyện gì đã xảy ra?", options, 0)
+        second = order_options("Chuyện gì đã xảy ra?", options, 0)
+        assert first == second
+
+    def test_the_correct_text_is_still_the_correct_index(self):
+        options = ["right", "wrong1", "wrong2", "wrong3"]
+        for question in [f"q{i}" for i in range(40)]:
+            ordered, answer = order_options(question, options, 0)
+            assert ordered[answer] == "right"
+            assert sorted(ordered) == sorted(options)
+
+    def test_a_position_biased_set_comes_out_balanced(self):
+        options = ["right", "w1", "w2", "w3"]
+        answers = [order_options(f"question {i}", options, 0)[1] for i in range(400)]
+        # The point is not an exact quarter each; it is that no position is the
+        # default, which is what the model produced.
+        for position in range(4):
+            assert 0.15 < answers.count(position) / len(answers) < 0.35, position
+
+    def test_ordering_an_already_ordered_set_changes_nothing(self):
+        # This is what makes the repair tool safe to run twice.  A fixed permutation
+        # would shuffle a balanced set straight back to 50% at A.
+        options = ["right", "w1", "w2", "w3"]
+        ordered, answer = order_options("q", options, 0)
+        assert order_options("q", ordered, answer) == (ordered, answer)
+
+    def test_a_single_option_is_left_alone(self):
+        assert order_options("q", ["only"], 0) == (["only"], 0)
+
+    def test_an_index_out_of_range_is_left_alone(self):
+        assert order_options("q", ["a", "b"], 5) == (["a", "b"], 5)
+
+    def test_rows_go_through_the_ordering(self):
+        # Ten questions the model would have answered "A" every time.
+        exercises = Exercises(
+            questions=[QuizItem(f"câu {i}", ["đúng", "sai 1", "sai 2", "sai 3"], 0) for i in range(10)]
+        )
+        rows = exercises_rows(exercises)
+        positions = {row["answer"] for row in rows}
+        assert len(positions) > 1, "every correct answer is still in the same place"
+        for row in rows:
+            assert row["options"][row["answer"]] == "đúng"
+
+
+class TestReshuffleTool:
+    """The free repair for questions stored before the ordering existed."""
+
+    def _store_biased(self, conn, count=20):
+        version_id = db.upsert_version(
+            conn, article_id=_article(conn), cefr_level="B1", simplified_text="Trời mưa."
+        )
+        db.replace_exercises(
+            conn,
+            version_id,
+            [
+                {
+                    "kind": "mcq",
+                    "ordinal": i,
+                    "prompt": f"câu {i}",
+                    "options": ["đúng", "sai 1", "sai 2", "sai 3"],
+                    "answer": 0,
+                    "why": "vì",
+                }
+                for i in range(count)
+            ],
+        )
+        return version_id
+
+    def test_it_moves_the_answers_without_re_generating_anything(self, conn):
+        from reading.tools.reshuffle import distribution, reshuffle
+
+        version_id = self._store_biased(conn)
+        assert distribution(conn) == {0: 20}
+
+        report = reshuffle(conn, verbose=False)
+
+        # A question whose content-determined order happens to match what was stored
+        # is skipped, so "changed" is at most the count.
+        assert 10 <= report["changed"] <= 20
+        assert len(distribution(conn)) >= 3, "the answers are still bunched in one place"
+        # The same texts, and the correct text still at the recorded index.
+        for row in conn.execute("SELECT options, answer FROM exercises WHERE kind='mcq'"):
+            options = json.loads(row["options"])
+            assert sorted(options) == sorted(["đúng", "sai 1", "sai 2", "sai 3"])
+            assert options[row["answer"]] == "đúng"
+        assert len(db.get_exercises(conn, version_id)["mcq"]) == 20
+
+    def test_a_dry_run_writes_nothing(self, conn):
+        from reading.tools.reshuffle import distribution, reshuffle
+
+        self._store_biased(conn, count=8)
+        reshuffle(conn, dry_run=True, verbose=False)
+        assert distribution(conn) == {0: 8}
+
+    def test_running_it_twice_is_a_no_op(self, conn):
+        """The tool must not drift the distribution back when run again."""
+        from reading.tools.reshuffle import distribution, reshuffle
+
+        self._store_biased(conn)
+        reshuffle(conn, verbose=False)
+        balanced = distribution(conn)
+        second = reshuffle(conn, verbose=False)
+        assert second["changed"] == 0
+        assert distribution(conn) == balanced
 
 
 class TestParsing:
@@ -81,7 +198,10 @@ class TestRows:
         )
         assert [r["kind"] for r in rows] == ["mcq", "mcq", "short", "writing"]
         assert [r["ordinal"] for r in rows[:3]] == [0, 1, 0]
-        assert rows[0]["options"] == ["a", "b"]
+        # The options are reordered by content, so the assertion is on the set and on
+        # which one is marked correct.
+        assert sorted(rows[0]["options"]) == ["a", "b"]
+        assert rows[0]["options"][rows[0]["answer"]] == "b"
         assert rows[3]["sample"] == "mẫu" and rows[3]["min_words"] == 40
 
     def test_an_empty_result_produces_no_rows(self):
@@ -106,8 +226,11 @@ class TestStorage:
 
         bundle = bundle_for_version(conn, result.version_id, dictionary=test_dictionary)
         exercises = bundle["exercises"]
-        assert exercises["mcq"][0]["options"] == ["A", "B", "C", "D"]
-        assert exercises["mcq"][0]["answer"] == 1
+        mcq = exercises["mcq"][0]
+        # The order is permuted at storage time, so the assertion is about the text
+        # that is marked correct, not about where it sits.
+        assert mcq["options"][mcq["answer"]] == "B"
+        assert sorted(mcq["options"]) == ["A", "B", "C", "D"]
         assert exercises["short"][0]["key_points"] == ["trời mưa"]
         assert exercises["writing"]["min_words"] == 40
 

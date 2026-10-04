@@ -207,7 +207,7 @@ files and records them in `schema_migrations`. Nothing drops or recreates a tabl
 | `article_versions` | one simplification per `(article, level)`, with model + simplification prompt version + exercises prompt version + quality |
 | `tokens` | the token map, indexed on `(version_id, start_char, end_char)`, with both definition languages |
 | `preteach` | vocabulary and grammar points, keyed by version |
-| `exercises` | comprehension questions and the writing task, keyed by version — one row per item |
+| `exercises` | comprehension questions and the writing task, keyed by version — one row per item, with the options already in their content-determined order |
 | `lookup_cache` | fallback answers, so one context is never paid for twice |
 
 `article_versions.quality` is `ok` or `syllable_mismatch`. The latter means the model's
@@ -321,7 +321,7 @@ alone until something actually needs it. The same Worker is the natural home for
 
 ## Testing
 
-`303 tests`. The reconciler and token-map builder are unit-tested against hand-written
+`313 tests`. The reconciler and token-map builder are unit-tested against hand-written
 segmentations, because their invariants (spans tile the syllables; offsets address the
 exact substring) are what the reader depends on. One integration test drives the whole
 pipeline over a fixture article with DeepSeek stubbed, so the pipeline's own logic is

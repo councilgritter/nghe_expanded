@@ -161,6 +161,27 @@ Each set is four multiple-choice questions (one of them requiring a relation, no
 fact lookup), 1–3 open questions with a model answer and a key-point checklist, and one
 writing task with the facts a good answer has to use.
 
+**The correct answer is not always first, and that is enforced rather than asked for.**
+Measured over the first 40 questions this pipeline generated: **34 had the answer at A**,
+five at B, one at D, none at C. The model anchors on the first option — the prompt's own
+example showed `"answer": 0` — and a reader who notices learns to press A, which measures
+nothing. So the options are put in a **content-determined order** at storage time: each
+option sorted by a hash of the question plus its own text. The correct answer's *text* is
+untouched; only where it sits changes, and the distribution becomes even (12/12/11/5 over
+those 40). Because the order is a pure function of the content it is stable and
+**idempotent** — the same question always lands in the same order, so the repair tool
+cannot drift a balanced set back towards the bias the way a fixed permutation did.
+
+That is also why the prompt forbids options that refer to each other ("cả A và B",
+"tất cả các ý trên"): such an option would not survive any reordering.
+
+Existing questions were fixed for free, with no model call:
+
+```bash
+python -m reading.tools.reshuffle --dry-run    # report the distribution
+python -m reading.tools.reshuffle              # reorder, then re-export
+```
+
 **Grading is local and honest about its limits.** The multiple-choice questions are
 marked exactly. The writing task checks length and which key facts appear (a
 case-folded content-word overlap, with function words dropped), and then shows the
@@ -298,7 +319,7 @@ The page needs HTTP; `file://` blocks the `fetch` of the bundle.
 
 ```bash
 python -m pytest              # from the repository root
-# 303 tests
+# 313 tests
 ```
 
 ## Environment
@@ -428,6 +449,9 @@ Kept low by design:
   small calls instead of ten rewrites.
 - **Re-segmentation is free.** `tools/resegment.py` re-applies the reconciler's guards
   to stored articles with no model call at all.
+- **Answer positions are balanced for free.** `tools/reshuffle.py` reorders stored
+  options by content, so a question written with the correct answer first costs nothing
+  to fix — and the same balancing happens automatically for every new question.
 - **Items too short to read are skipped before the call**, so a video clip's two-sentence
   lede never costs a simplification.
 - **Prompt caching**: system prompts are module constants and the article is never
@@ -466,11 +490,12 @@ tools/
   build_glosses.py          kaikki.org Wiktionary extract → English glosses
   build_site.py             stored articles → static bundles (with the lookup index)
   resegment.py              re-apply the guards to stored articles, free
+  reshuffle.py              even out stored options' answer positions, free
   r2_sync.py                carry the database + dictionary to/from object storage
 web/index.html              the reader page (markup + styles, dark and light)
 web/reader.js               its logic, loaded as a separate file
 fixtures/                   RSS, article and page fixtures for the tests
-tests/                      303 tests
+tests/                      313 tests
 ```
 
 Two files it shares with the drill rather than duplicating: `../theme.js` (dark/light,
