@@ -215,6 +215,67 @@ class TestRefreshExercises:
         assert len(db.get_exercises(conn, version_id)["mcq"]) == before
 
 
+class TestCli:
+    """The command line, because two flags there decide what gets paid for.
+
+    `--refresh-exercises` with no level has to mean *every* level: a parser default of
+    the configured level would silently restrict the run to one, which is the sort of
+    bug that only shows up as "why did half the articles get questions".
+    """
+
+    def _stub(self, monkeypatch, stub):
+        from reading.pipeline import ingest as ingest_module
+
+        monkeypatch.setattr(ingest_module, "DeepSeekClient", lambda cfg: stub)
+        return stub
+
+    def test_refresh_exercises_without_a_level_covers_every_level(
+        self, conn, raw_article, stub_simplifier, test_dictionary, fixture_json, monkeypatch
+    ):
+        from .conftest import StubSimplifier
+        from reading.pipeline.ingest import main
+
+        run(conn, raw_article, StubSimplifier.from_fixture(fixture_json), test_dictionary, cefr="A2")
+        run(conn, raw_article, StubSimplifier.from_fixture(fixture_json), test_dictionary, cefr="B1")
+        conn.execute("UPDATE article_versions SET exercises_prompt_version = 'exercises-v0'")
+        conn.commit()
+
+        stub = self._stub(monkeypatch, stub_simplifier)
+        db_path = conn.execute("PRAGMA database_list").fetchone()[2]
+        assert main(["--refresh-exercises", "--db", db_path]) == 0
+
+        assert len(stub.exercise_calls) == 2, "a level was skipped"
+        assert all(
+            row["exercises_prompt_version"] == prompts.EXERCISES_PROMPT_VERSION
+            for row in conn.execute("SELECT exercises_prompt_version FROM article_versions")
+        )
+
+    def test_an_explicit_level_is_still_honoured(
+        self, conn, raw_article, stub_simplifier, test_dictionary, fixture_json, monkeypatch
+    ):
+        from .conftest import StubSimplifier
+        from reading.pipeline.ingest import main
+
+        run(conn, raw_article, StubSimplifier.from_fixture(fixture_json), test_dictionary, cefr="A2")
+        run(conn, raw_article, StubSimplifier.from_fixture(fixture_json), test_dictionary, cefr="B1")
+        conn.execute("UPDATE article_versions SET exercises_prompt_version = 'exercises-v0'")
+        conn.commit()
+
+        stub = self._stub(monkeypatch, stub_simplifier)
+        db_path = conn.execute("PRAGMA database_list").fetchone()[2]
+        main(["--refresh-exercises", "--cefr", "A2", "--db", db_path])
+
+        assert len(stub.exercise_calls) == 1
+        levels = [
+            row["cefr_level"]
+            for row in conn.execute(
+                "SELECT cefr_level FROM article_versions WHERE exercises_prompt_version = ?",
+                (prompts.EXERCISES_PROMPT_VERSION,),
+            )
+        ]
+        assert levels == ["A2"]
+
+
 class TestGenerateDirect:
     def test_rows_are_written_for_a_stored_text(self, conn, stub_simplifier):
         """The helper the refresh path uses, exercised on its own."""

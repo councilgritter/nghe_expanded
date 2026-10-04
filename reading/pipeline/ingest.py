@@ -597,7 +597,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog="python -m reading.pipeline.ingest",
         description="Ingest Vietnamese news articles for reading practice.",
     )
-    parser.add_argument("--cefr", default=default_settings.default_cefr,
+    # No default here: `--refresh-exercises` with no level means *every* level, and a
+    # parser default of the configured level would silently restrict it to one.  The
+    # ingest path applies the configured default explicitly instead.
+    parser.add_argument("--cefr", default=None,
                         choices=list(prompts.CEFR_LEVELS), help="target level")
     parser.add_argument("--limit", type=int, default=None,
                         help="max new articles this run (0 or unset = config default)")
@@ -687,8 +690,17 @@ def _run_exercises_only(conn, client: Simplifier, args) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     cfg = _config_from_args(args)
-
     conn = db.connect(cfg.db_path)
+    try:
+        return _dispatch(conn, cfg, args)
+    finally:
+        # Closed explicitly rather than at interpreter exit: a caller that reuses the
+        # same database file (the tests, or a server wrapping this) is otherwise left
+        # with a locked file.
+        conn.close()
+
+
+def _dispatch(conn, cfg: Settings, args) -> int:
     applied = db.migrate(conn)
     if applied:
         print(f"Applied migrations: {', '.join(applied)}")
@@ -717,7 +729,7 @@ def main(argv: list[str] | None = None) -> int:
 
     stats = run_ingest(
         conn,
-        cefr_level=args.cefr,
+        cefr_level=args.cefr or cfg.default_cefr,
         client=client,
         dictionary=dictionary,
         cfg=cfg,

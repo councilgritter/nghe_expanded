@@ -298,7 +298,7 @@ The page needs HTTP; `file://` blocks the `fetch` of the bundle.
 
 ```bash
 python -m pytest              # from the repository root
-# 301 tests
+# 303 tests
 ```
 
 ## Environment
@@ -470,7 +470,7 @@ tools/
 web/index.html              the reader page (markup + styles, dark and light)
 web/reader.js               its logic, loaded as a separate file
 fixtures/                   RSS, article and page fixtures for the tests
-tests/                      301 tests
+tests/                      303 tests
 ```
 
 Two files it shares with the drill rather than duplicating: `../theme.js` (dark/light,

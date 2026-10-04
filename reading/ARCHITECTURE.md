@@ -321,7 +321,7 @@ alone until something actually needs it. The same Worker is the natural home for
 
 ## Testing
 
-`301 tests`. The reconciler and token-map builder are unit-tested against hand-written
+`303 tests`. The reconciler and token-map builder are unit-tested against hand-written
 segmentations, because their invariants (spans tile the syllables; offsets address the
 exact substring) are what the reader depends on. One integration test drives the whole
 pipeline over a fixture article with DeepSeek stubbed, so the pipeline's own logic is
