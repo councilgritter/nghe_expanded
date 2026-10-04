@@ -199,6 +199,8 @@ Kept low by design:
 
 - **Off-peak only, by default.** A run is refused during DeepSeek's peak hours, which
   cost double — see the guard above. That halves the bill for no code change.
+- **Actual usage is printed, not estimated.** Every article logs the tokens DeepSeek
+  reported, and the run ends with a total, so the real cost is visible per run.
 - **One DeepSeek call per (article, level)** at ingest — never per word. Segmentation,
   reconciliation and the token map all run locally.
 - **Definitions are mostly free**: the pre-teach glosses from that same call are reused

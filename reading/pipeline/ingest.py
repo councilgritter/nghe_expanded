@@ -56,6 +56,9 @@ class ArticleResult:
     tokens: int = 0
     reconcile: ReconcileStats | None = None
     reason: str = ""
+    # Token usage DeepSeek reported for this article's one call, so the real cost
+    # is visible rather than estimated.
+    usage: dict = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -231,6 +234,7 @@ def ingest_article(
     result.quality = quality
     result.tokens = row_count
     result.reconcile = stats
+    result.usage = simplification.usage or {}
     return result
 
 
@@ -261,12 +265,16 @@ def run_ingest(
         articles = sources.fetch_all(cfg)
 
     cap = cfg.ingest_limit if limit is None else limit
-    # Only new (article, level) pairs cost anything, so dedupe before applying any
-    # cap.  An article already stored at *another* level still needs work here.
+    # Dedupe before applying any cap.  The unit of work is the (article, level) pair:
+    # an article already stored at *another* level still needs work here.
+    #
+    # `refresh` means "re-generate what is already there", NOT "treat everything as
+    # new" — so it is bounded by the pairs already paid for.  Without that split,
+    # --refresh with no --limit would re-ingest the entire feed and spend on all of it.
     fresh = [
         a
         for a in articles
-        if refresh or not db.version_exists(conn, a.source, a.guid, cefr_level)
+        if db.version_exists(conn, a.source, a.guid, cefr_level) == refresh
     ]
     stats.skipped_duplicates = len(articles) - len(fresh)
     if cap:
@@ -309,10 +317,36 @@ def _print_result(result: ArticleResult) -> None:
         )
         flag = "" if result.quality == QUALITY_OK else f"  [{result.quality}]"
         print(f"    ingested: {detail}{flag}")
+        spent = usage_line(result.usage)
+        if spent:
+            print(f"    cost: {spent}")
         if result.reason:
             print(f"    note: {result.reason}")
     else:
         print(f"    {result.status}: {result.reason}")
+
+
+def usage_line(usage: dict) -> str:
+    """Human summary of one call's token usage, from what the API reported."""
+    if not usage:
+        return ""
+    prompt = usage.get("prompt_tokens", 0)
+    completion = usage.get("completion_tokens", 0)
+    cached = usage.get("prompt_cache_hit_tokens", 0)
+    text = f"{prompt:,} in / {completion:,} out / {usage.get('total_tokens', 0):,} total"
+    if cached:
+        text += f" ({cached:,} cached)"
+    return text
+
+
+def run_totals(results: list[ArticleResult]) -> dict:
+    """Sum the reported usage across a run, for the closing summary."""
+    totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+              "prompt_cache_hit_tokens": 0}
+    for result in results:
+        for key in totals:
+            totals[key] += int(result.usage.get(key, 0) or 0)
+    return totals
 
 
 def _open_dictionary(cfg: Settings, required: bool) -> CompoundDictionary | None:
@@ -415,6 +449,9 @@ def main(argv: list[str] | None = None) -> int:
         f"\n{stats.ingested} ingested, {stats.duplicates} duplicates, "
         f"{stats.failed} failed"
     )
+    spent = usage_line(run_totals(stats.results))
+    if spent:
+        print(f"DeepSeek usage this run: {spent}")
     return 1 if stats.failed and not stats.ingested else 0
 
 

@@ -162,6 +162,34 @@ class TestDeduplication:
         assert len(db.get_tokens(conn, version_id)) == tokens_before
         assert len(db.list_articles(conn)) == 1
 
+    def test_refresh_leaves_never_ingested_articles_alone(
+        self, conn, raw_article, stub_simplifier, test_dictionary, fixture_json
+    ):
+        """A refresh must stay bounded by what was already paid for.
+
+        Treating the whole feed as new would let `--refresh` with no `--limit` spend on
+        every feed item, which is the opposite of what the flag means.
+        """
+        from .conftest import StubSimplifier
+
+        run(conn, raw_article, stub_simplifier, test_dictionary, cefr="B1")
+        never_ingested = replace(raw_article, guid="fixture-never", title="Chưa từng nhập")
+
+        refreshed = run_ingest(
+            conn,
+            cefr_level="B1",
+            client=StubSimplifier.from_fixture(fixture_json),
+            dictionary=test_dictionary,
+            cfg=replace(settings, fetch_full_text=False),
+            articles=[raw_article, never_ingested],
+            verbose=False,
+            refresh=True,
+        )
+
+        assert refreshed.ingested == 1, "refresh touched an article that was never ingested"
+        assert len(db.list_articles(conn)) == 1
+        assert db.list_articles(conn)[0]["guid"] == raw_article.guid
+
 
 class TestIngestIsResilient:
     def test_an_empty_module_response_is_a_failure_not_a_crash(

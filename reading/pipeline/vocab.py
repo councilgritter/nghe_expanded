@@ -25,6 +25,17 @@ def normalize_term(term: str) -> str:
     return UNDERSCORE.join(part for part in squeezed.split(" ") if part)
 
 
+def plain(text: str) -> str:
+    """Prose with the underscore convention stripped out.
+
+    The model is told to join syllables with ``_`` in the *article*, and it sometimes
+    carries that into the glosses and examples as well ("dùng vũ_lực để..."). Those
+    fields are read, not segmented, so the underscores come out. ``term`` keeps them:
+    it is the key the token map looks definitions up by.
+    """
+    return squeeze_whitespace(text.replace(UNDERSCORE, " "))
+
+
 def preteach_rows(
     vocab: Sequence[PreTeachItem],
     grammar: Sequence[PreTeachItem],
@@ -44,9 +55,9 @@ def preteach_rows(
                 {
                     "kind": kind,
                     "term": term,
-                    "gloss": squeeze_whitespace(item.gloss),
+                    "gloss": plain(item.gloss),
                     "cefr_level": (item.cefr or default_cefr).upper() or None,
-                    "example": squeeze_whitespace(item.example)[:MAX_EXAMPLE_CHARS] or None,
+                    "example": plain(item.example)[:MAX_EXAMPLE_CHARS] or None,
                     "ordinal": ordinal,
                 }
             )
@@ -63,7 +74,7 @@ def definitions_from_preteach(vocab: Iterable[PreTeachItem]) -> dict[str, Defini
     out: dict[str, Definition] = {}
     for item in vocab:
         term = normalize_term(item.term)
-        gloss = squeeze_whitespace(item.gloss)
+        gloss = plain(item.gloss)
         if not term or not gloss:
             continue
         out.setdefault(
